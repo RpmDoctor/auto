@@ -60,6 +60,11 @@ class Settings:
     strat_ema_slow: int
     risk_trailing_stop_pct: float
     risk_daily_loss_limit_pct: float
+    risk_max_consecutive_losses: int
+    risk_max_open_positions: int
+    trading_use_exchange_filters: bool
+    risk_atr_multiplier_sl: float
+    risk_atr_multiplier_tp: float
 
 
 def _parse_bool(value: str | None, default: bool = True) -> bool:
@@ -144,6 +149,11 @@ def get_settings() -> Settings:
 
     risk_trailing_stop_pct = _parse_float(os.getenv("RISK_TRAILING_STOP_PCT"), default=0.3)
     risk_daily_loss_limit_pct = _parse_float(os.getenv("RISK_DAILY_LOSS_LIMIT_PCT"), default=3.0)
+    risk_max_consecutive_losses = _parse_int(os.getenv("RISK_MAX_CONSECUTIVE_LOSSES"), default=5)
+    risk_max_open_positions = _parse_int(os.getenv("RISK_MAX_OPEN_POSITIONS"), default=1)
+    trading_use_exchange_filters = _parse_bool(os.getenv("TRADING_USE_EXCHANGE_FILTERS"), default=True)
+    risk_atr_multiplier_sl = _parse_float(os.getenv("RISK_ATR_MULTIPLIER_SL"), default=1.5)
+    risk_atr_multiplier_tp = _parse_float(os.getenv("RISK_ATR_MULTIPLIER_TP"), default=3.0)
 
     placeholder_values = {"YOUR_API_KEY_HERE", "YOUR_API_SECRET_HERE"}
     if (
@@ -211,6 +221,10 @@ def get_settings() -> Settings:
         raise ValueError("RISK_TRAILING_STOP_PCT는 0 이상이어야 합니다.")
     if risk_daily_loss_limit_pct <= 0:
         raise ValueError("RISK_DAILY_LOSS_LIMIT_PCT는 0보다 커야 합니다.")
+    if risk_max_consecutive_losses < 0:
+        raise ValueError("RISK_MAX_CONSECUTIVE_LOSSES는 0 이상이어야 합니다.")
+    if risk_max_open_positions <= 0:
+        raise ValueError("RISK_MAX_OPEN_POSITIONS는 1 이상이어야 합니다.")
 
     return Settings(
         binance_api_key=api_key,
@@ -254,4 +268,9 @@ def get_settings() -> Settings:
         strat_ema_slow=strat_ema_slow,
         risk_trailing_stop_pct=risk_trailing_stop_pct,
         risk_daily_loss_limit_pct=risk_daily_loss_limit_pct,
+        risk_max_consecutive_losses=risk_max_consecutive_losses,
+        risk_max_open_positions=risk_max_open_positions,
+        trading_use_exchange_filters=trading_use_exchange_filters,
+        risk_atr_multiplier_sl=risk_atr_multiplier_sl,
+        risk_atr_multiplier_tp=risk_atr_multiplier_tp,
     )

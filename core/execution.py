@@ -6,6 +6,8 @@ from typing import Any
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
+from core.filters import ExchangeFilters
+
 
 def get_mark_price(client: Client, symbol: str) -> float:
     data = client.futures_mark_price(symbol=symbol)
@@ -51,12 +53,17 @@ def place_market_order_and_wait(
     side: str,
     quantity: float,
     reduce_only: bool = False,
+    use_filters: bool = True,
 ) -> dict[str, Any]:
+    final_qty = quantity
+    if use_filters:
+        final_qty = ExchangeFilters.round_quantity(client, symbol, quantity)
+
     order = client.futures_create_order(
         symbol=symbol,
         side=side,
         type="MARKET",
-        quantity=quantity,
+        quantity=final_qty,
         reduceOnly=reduce_only,
     )
     oid = int(order.get("orderId"))

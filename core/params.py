@@ -28,6 +28,8 @@ class StrategyParams:
     ema_slow: int
     trailing_stop_pct: float
     daily_loss_limit_pct: float
+    atr_multiplier_sl: float
+    atr_multiplier_tp: float
 
 
 def _coerce_int(value: Any, fallback: int) -> int:
@@ -62,6 +64,8 @@ def default_params_from_settings(settings: Settings) -> StrategyParams:
         ema_slow=settings.strat_ema_slow,
         trailing_stop_pct=settings.risk_trailing_stop_pct,
         daily_loss_limit_pct=settings.risk_daily_loss_limit_pct,
+        atr_multiplier_sl=settings.risk_atr_multiplier_sl,
+        atr_multiplier_tp=settings.risk_atr_multiplier_tp,
     )
 
 
@@ -94,6 +98,8 @@ def load_params(settings: Settings) -> StrategyParams:
         ema_slow=_coerce_int(data.get("ema_slow"), params.ema_slow),
         trailing_stop_pct=_coerce_float(data.get("trailing_stop_pct"), params.trailing_stop_pct),
         daily_loss_limit_pct=_coerce_float(data.get("daily_loss_limit_pct"), params.daily_loss_limit_pct),
+        atr_multiplier_sl=_coerce_float(data.get("atr_multiplier_sl"), params.atr_multiplier_sl),
+        atr_multiplier_tp=_coerce_float(data.get("atr_multiplier_tp"), params.atr_multiplier_tp),
     )
 
 

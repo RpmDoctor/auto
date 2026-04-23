@@ -97,3 +97,51 @@ def append_trade_log(
         if write_header:
             writer.writeheader()
         writer.writerow(row)
+
+
+def log_completed_trade(
+    path: str | Path,
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    entry_price: float,
+    exit_price: float,
+    entry_time: str,
+    exit_time: str,
+    pnl: float,
+    roi_pct: float,
+    fee: float = 0.0,
+    exit_reason: str | None = None,
+) -> None:
+    """
+    진입부터 청산까지의 한 사이클을 logs/trade_history.csv 에 기록합니다.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    row = {
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "entry_time": entry_time,
+        "exit_time": exit_time,
+        "pnl": round(pnl, 4),
+        "roi_pct": round(roi_pct, 2),
+        "fee": round(fee, 4),
+        "exit_reason": exit_reason or "",
+    }
+
+    fieldnames = [
+        "symbol", "side", "quantity", "entry_price", "exit_price", 
+        "entry_time", "exit_time", "pnl", "roi_pct", "fee", "exit_reason"
+    ]
+
+    write_header = not path.exists()
+    with path.open("a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)

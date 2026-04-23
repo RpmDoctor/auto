@@ -33,6 +33,34 @@ def calculate_ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
 
 
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    ATR(Average True Range) 계산
+    """
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    prev_close = df["close"].astype(float).shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean() # Wilder's can be used, but simple mean is fine for start
+    return atr
+
+
+def calculate_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[pd.Series, pd.Series]:
+    """
+    MACD 및 Signal Line 계산
+    """
+    exp1 = series.ewm(span=fast, adjust=False).mean()
+    exp2 = series.ewm(span=slow, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
+
+
 def simple_ma_cross_signal(
     df: pd.DataFrame,
     fast_window: int = 5,
@@ -73,6 +101,10 @@ def breakout_volume_direction_signal(
     rsi_high: float = 70.0,
     ema_fast_p: int = 20,
     ema_slow_p: int = 50,
+    macd_fast: int = 12,
+    macd_slow: int = 26,
+    macd_signal: int = 9,
+    atr_period: int = 14,
 ) -> tuple[str, str]:
     """
     고도화된 돌파 진입 조건:
@@ -85,7 +117,7 @@ def breakout_volume_direction_signal(
     반환:
     - ("LONG"|"SHORT"|"HOLD", "사유")
     """
-    min_req = max(lookback, rsi_period, ema_slow_p) + 2
+    min_req = max(lookback, rsi_period, ema_slow_p, macd_slow + macd_signal, atr_period) + 2
     if df.empty or len(df) < min_req:
         return "HOLD", "데이터 부족"
 
@@ -95,6 +127,10 @@ def breakout_volume_direction_signal(
     rsi = calculate_rsi(close_series, rsi_period).iloc[-1]
     ema_fast = calculate_ema(close_series, ema_fast_p).iloc[-1]
     ema_slow = calculate_ema(close_series, ema_slow_p).iloc[-1]
+    macd, macd_signal_line = calculate_macd(close_series, macd_fast, macd_slow, macd_signal)
+    cur_macd = macd.iloc[-1]
+    cur_macd_signal = macd_signal_line.iloc[-1]
+    atr = calculate_atr(df, atr_period).iloc[-1]
 
     cur = df.iloc[-1]
     prev_range = df.iloc[-(lookback + 1) : -1]
@@ -123,25 +159,30 @@ def breakout_volume_direction_signal(
 
     body_ok = body_pct >= float(min_body_pct)
     
-    # 추세 및 RSI 필터
+    # 추세 및 RSI, MACD 필터
     trend_up = ema_fast > ema_slow
     trend_down = ema_fast < ema_slow
     rsi_long_ok = rsi < rsi_high
     rsi_short_ok = rsi > rsi_low
+    macd_long_ok = cur_macd > cur_macd_signal
+    macd_short_ok = cur_macd < cur_macd_signal
 
-    if breakout_up and vol_ok and is_bull and body_ok and trend_up and rsi_long_ok:
-        return "LONG", f"돌파↑+거래량+양봉+정배열+RSI({rsi:.1f})"
+    if breakout_up and vol_ok and is_bull and body_ok and trend_up and rsi_long_ok and macd_long_ok:
+        return "LONG", f"돌파↑+거래량+양봉+정배열+MACD골든+RSI({rsi:.1f})+ATR({atr:.2f})"
     
-    if breakout_down and vol_ok and is_bear and body_ok and trend_down and rsi_short_ok:
-        return "SHORT", f"돌파↓+거래량+음봉+역배열+RSI({rsi:.1f})"
+    if breakout_down and vol_ok and is_bear and body_ok and trend_down and rsi_short_ok and macd_short_ok:
+        return "SHORT", f"돌파↓+거래량+음봉+역배열+MACD데드+RSI({rsi:.1f})+ATR({atr:.2f})"
 
     reason = []
     if not (breakout_up or breakout_down): reason.append("돌파X")
     if not vol_ok: reason.append("거래량X")
     if not body_ok: reason.append("몸통X")
     if not (trend_up or trend_down): reason.append("추세혼조")
+    if not (macd_long_ok or macd_short_ok): reason.append("MACD방향X")
     if (breakout_up and not trend_up): reason.append("추세불일치(LONG)")
     if (breakout_down and not trend_down): reason.append("추세불일치(SHORT)")
+    if (breakout_up and not macd_long_ok): reason.append("MACD불일치(LONG)")
+    if (breakout_down and not macd_short_ok): reason.append("MACD불일치(SHORT)")
     if (breakout_up and not rsi_long_ok): reason.append(f"RSI과매수({rsi:.1f})")
     if (breakout_down and not rsi_short_ok): reason.append(f"RSI과매도({rsi:.1f})")
 
