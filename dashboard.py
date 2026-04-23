@@ -239,6 +239,96 @@ def _render_health() -> None:
     st.write(f"전체 결과: {'정상' if all_ok else '실패'}")
 
 
+def _run_backtest_sim(df: pd.DataFrame, params: StrategyParams, settings: Settings):
+    """
+    단순 백테스트 시뮬레이션 엔진
+    """
+    if df.empty or len(df) < 100:
+        return None
+
+    # 결과 기록용
+    trades = []
+    
+    in_pos = False
+    side = None # "LONG", "SHORT"
+    entry_p = 0.0
+    high_water = 0.0
+    
+    # 전략 파라미터
+    sl = params.stop_loss_pct / 100.0
+    tp = params.take_profit_pct / 100.0
+    ts = params.trailing_stop_pct / 100.0
+    
+    # 수수료 (테이커 기준 왕복 약 0.1%)
+    fee_rate = 0.0005 # 편도 0.05%
+    
+    # 루프 (최소 지표 계산 기간 이후부터 시작)
+    start_idx = max(params.lookback, params.rsi_period, params.ema_slow) + 5
+    
+    for i in range(int(start_idx), len(df)):
+        cur_df = df.iloc[:i+1] # 현재 시점까지의 데이터
+        cur_row = df.iloc[i]
+        cur_p = float(cur_row["close"])
+        
+        if not in_pos:
+            # 진입 시그널 체크
+            sig, reason = breakout_volume_direction_signal(
+                cur_df,
+                lookback=params.lookback,
+                volume_mult=params.volume_mult,
+                min_body_pct=params.min_body_pct,
+                rsi_period=params.rsi_period,
+                rsi_low=params.rsi_low,
+                rsi_high=params.rsi_high,
+                ema_fast_p=params.ema_fast,
+                ema_slow_p=params.ema_slow
+            )
+            
+            if sig in ["LONG", "SHORT"]:
+                in_pos = True
+                side = sig
+                entry_p = cur_p
+                high_water = cur_p
+                entry_time = cur_row["open_time"]
+                entry_reason = reason
+        else:
+            # 청산 체크
+            exit_reason = None
+            pnl_pct = 0.0
+            
+            if side == "LONG":
+                high_water = max(high_water, cur_p)
+                # 손익 계산
+                if cur_p <= entry_p * (1 - sl): exit_reason = "손절"
+                elif cur_p >= entry_p * (1 + tp): exit_reason = "익절"
+                elif ts > 0 and cur_p <= high_water * (1 - ts) and cur_p > entry_p: exit_reason = "트레일링"
+                
+                if exit_reason:
+                    pnl_pct = (cur_p - entry_p) / entry_p - (fee_rate * 2)
+            else: # SHORT
+                high_water = min(high_water, cur_p)
+                if cur_p >= entry_p * (1 + sl): exit_reason = "손절"
+                elif cur_p <= entry_p * (1 - tp): exit_reason = "익절"
+                elif ts > 0 and cur_p >= high_water * (1 + ts) and cur_p < entry_p: exit_reason = "트레일링"
+                
+                if exit_reason:
+                    pnl_pct = (entry_p - cur_p) / entry_p - (fee_rate * 2)
+            
+            if exit_reason:
+                trades.append({
+                    "entry_time": entry_time,
+                    "exit_time": cur_row["open_time"],
+                    "side": side,
+                    "entry_p": entry_p,
+                    "exit_p": cur_p,
+                    "pnl_pct": pnl_pct * 100,
+                    "reason": exit_reason
+                })
+                in_pos = False
+
+    return pd.DataFrame(trades)
+
+
 def _render_trade_summary(symbol: str | None, limit: int) -> None:
     st.subheader("거래 요약(선물)")
     st.caption("단위는 대부분 USDT(테더)입니다. (테스트넷도 동일)")
@@ -606,7 +696,7 @@ def main() -> None:
         st.error(str(e))
         st.stop()
 
-    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "상태/로그", "진입/청산 조건"])
+    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "백테스트", "상태/로그", "진입/청산 조건"])
 
     with tabs[0]:
         _render_trade_summary(symbol=symbol, limit=trades_limit)
@@ -627,10 +717,39 @@ def main() -> None:
             st.info("관심 종목이 없습니다.")
 
     with tabs[3]:
+        st.subheader("봇 전략 시뮬레이션 (최근 데이터 백테스트)")
+        st.caption("현재 설정값으로 최근 과거 데이터를 돌려봤을 때의 가상 성과입니다.")
+        
+        test_symbol = st.selectbox("테스트할 종목", watchlist if watchlist else [settings.trading_symbol])
+        test_limit = st.slider("테스트 봉 개수 (최근 기준)", 500, 1500, 1000)
+        
+        if st.button("시뮬레이션 시작"):
+            with st.spinner("과거 데이터 분석 중..."):
+                test_df = fetch_futures_klines(_get_client(), test_symbol, settings.trading_interval, limit=test_limit)
+                params = load_params(settings)
+                res = _run_backtest_sim(test_df, params, settings)
+                
+                if res is not None and not res.empty:
+                    c1, c2, c3 = st.columns(3)
+                    total_pnl = res["pnl_pct"].sum()
+                    win_rate = len(res[res["pnl_pct"] > 0]) / len(res) * 100
+                    with c1: st.metric("예상 누적 수익률", f"{total_pnl:.2f}%")
+                    with c2: st.metric("총 거래 횟수", f"{len(res)}회")
+                    with c3: st.metric("승률", f"{win_rate:.1f}%")
+                    
+                    # 수익률 차트
+                    res["cum_pnl"] = res["pnl_pct"].cumsum()
+                    st.line_chart(res.set_index("exit_time")["cum_pnl"])
+                    
+                    st.dataframe(res, width="stretch")
+                else:
+                    st.warning("해당 기간 동안 발생한 거래가 없습니다. 조건을 더 완화하거나 기간을 늘려보세요.")
+
+    with tabs[4]:
         _render_health()
         _render_logs()
 
-    with tabs[4]:
+    with tabs[5]:
         _render_rules()
 
 
