@@ -26,6 +26,9 @@ class StrategyParams:
     rsi_high: float
     ema_fast: int
     ema_slow: int
+    macd_fast: int
+    macd_slow: int
+    macd_signal: int
     trailing_stop_pct: float
     daily_loss_limit_pct: float
     atr_multiplier_sl: float
@@ -62,6 +65,9 @@ def default_params_from_settings(settings: Settings) -> StrategyParams:
         rsi_high=settings.strat_rsi_high,
         ema_fast=settings.strat_ema_fast,
         ema_slow=settings.strat_ema_slow,
+        macd_fast=settings.strat_macd_fast,
+        macd_slow=settings.strat_macd_slow,
+        macd_signal=settings.strat_macd_signal,
         trailing_stop_pct=settings.risk_trailing_stop_pct,
         daily_loss_limit_pct=settings.risk_daily_loss_limit_pct,
         atr_multiplier_sl=settings.risk_atr_multiplier_sl,
@@ -96,6 +102,9 @@ def load_params(settings: Settings) -> StrategyParams:
         rsi_high=_coerce_float(data.get("rsi_high"), params.rsi_high),
         ema_fast=_coerce_int(data.get("ema_fast"), params.ema_fast),
         ema_slow=_coerce_int(data.get("ema_slow"), params.ema_slow),
+        macd_fast=_coerce_int(data.get("macd_fast"), params.macd_fast),
+        macd_slow=_coerce_int(data.get("macd_slow"), params.macd_slow),
+        macd_signal=_coerce_int(data.get("macd_signal"), params.macd_signal),
         trailing_stop_pct=_coerce_float(data.get("trailing_stop_pct"), params.trailing_stop_pct),
         daily_loss_limit_pct=_coerce_float(data.get("daily_loss_limit_pct"), params.daily_loss_limit_pct),
         atr_multiplier_sl=_coerce_float(data.get("atr_multiplier_sl"), params.atr_multiplier_sl),

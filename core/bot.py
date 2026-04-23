@@ -372,6 +372,9 @@ def run_bot(client: Client, settings: Settings) -> None:
                 rsi_high=params.rsi_high,
                 ema_fast_p=params.ema_fast,
                 ema_slow_p=params.ema_slow,
+                macd_fast=params.macd_fast,
+                macd_slow=params.macd_slow,
+                macd_signal=params.macd_signal,
             )
 
             if signal in {"LONG", "SHORT"}:

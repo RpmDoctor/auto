@@ -58,6 +58,9 @@ class Settings:
     strat_rsi_high: float
     strat_ema_fast: int
     strat_ema_slow: int
+    strat_macd_fast: int
+    strat_macd_slow: int
+    strat_macd_signal: int
     risk_trailing_stop_pct: float
     risk_daily_loss_limit_pct: float
     risk_max_consecutive_losses: int
@@ -146,6 +149,9 @@ def get_settings() -> Settings:
     strat_rsi_high = _parse_float(os.getenv("STRAT_RSI_HIGH"), default=70.0)
     strat_ema_fast = _parse_int(os.getenv("STRAT_EMA_FAST"), default=20)
     strat_ema_slow = _parse_int(os.getenv("STRAT_EMA_SLOW"), default=50)
+    strat_macd_fast = _parse_int(os.getenv("STRAT_MACD_FAST"), default=12)
+    strat_macd_slow = _parse_int(os.getenv("STRAT_MACD_SLOW"), default=26)
+    strat_macd_signal = _parse_int(os.getenv("STRAT_MACD_SIGNAL"), default=9)
 
     risk_trailing_stop_pct = _parse_float(os.getenv("RISK_TRAILING_STOP_PCT"), default=0.3)
     risk_daily_loss_limit_pct = _parse_float(os.getenv("RISK_DAILY_LOSS_LIMIT_PCT"), default=3.0)
@@ -266,6 +272,9 @@ def get_settings() -> Settings:
         strat_rsi_high=strat_rsi_high,
         strat_ema_fast=strat_ema_fast,
         strat_ema_slow=strat_ema_slow,
+        strat_macd_fast=strat_macd_fast,
+        strat_macd_slow=strat_macd_slow,
+        strat_macd_signal=strat_macd_signal,
         risk_trailing_stop_pct=risk_trailing_stop_pct,
         risk_daily_loss_limit_pct=risk_daily_loss_limit_pct,
         risk_max_consecutive_losses=risk_max_consecutive_losses,

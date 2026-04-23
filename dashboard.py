@@ -26,7 +26,7 @@ from core.client import create_binance_client
 from core.health import run_health_checks
 from core.watchlist import build_auto_watchlist
 from core.params import load_params
-from core.strategy import breakout_volume_direction_signal, calculate_rsi, calculate_ema
+from core.strategy import breakout_volume_direction_signal, calculate_rsi, calculate_ema, calculate_atr
 from core.data import fetch_futures_klines
 
 
@@ -199,7 +199,10 @@ def _get_live_signals(symbols: list[str]) -> pd.DataFrame:
                 rsi_low=params.rsi_low,
                 rsi_high=params.rsi_high,
                 ema_fast_p=params.ema_fast,
-                ema_slow_p=params.ema_slow
+                ema_slow_p=params.ema_slow,
+                macd_fast=params.macd_fast,
+                macd_slow=params.macd_slow,
+                macd_signal=params.macd_signal,
             )
             
             close_series = df["close"].astype(float)
@@ -265,6 +268,9 @@ def _run_backtest_sim(df: pd.DataFrame, params: StrategyParams, settings: Settin
     # 루프 (최소 지표 계산 기간 이후부터 시작)
     start_idx = max(params.lookback, params.rsi_period, params.ema_slow) + 5
     
+    sl_p = 0.0
+    tp_p = 0.0
+    
     for i in range(int(start_idx), len(df)):
         cur_df = df.iloc[:i+1] # 현재 시점까지의 데이터
         cur_row = df.iloc[i]
@@ -281,7 +287,10 @@ def _run_backtest_sim(df: pd.DataFrame, params: StrategyParams, settings: Settin
                 rsi_low=params.rsi_low,
                 rsi_high=params.rsi_high,
                 ema_fast_p=params.ema_fast,
-                ema_slow_p=params.ema_slow
+                ema_slow_p=params.ema_slow,
+                macd_fast=params.macd_fast,
+                macd_slow=params.macd_slow,
+                macd_signal=params.macd_signal,
             )
             
             if sig in ["LONG", "SHORT"]:
@@ -291,6 +300,16 @@ def _run_backtest_sim(df: pd.DataFrame, params: StrategyParams, settings: Settin
                 high_water = cur_p
                 entry_time = cur_row["open_time"]
                 entry_reason = reason
+                
+                # ATR 기반 SL/TP 계산 (진입 시점)
+                atr_series = calculate_atr(cur_df)
+                atr_val = float(atr_series.iloc[-1])
+                if sig == "LONG":
+                    sl_p = entry_p - (atr_val * params.atr_multiplier_sl)
+                    tp_p = entry_p + (atr_val * params.atr_multiplier_tp)
+                else:
+                    sl_p = entry_p + (atr_val * params.atr_multiplier_sl)
+                    tp_p = entry_p - (atr_val * params.atr_multiplier_tp)
         else:
             # 청산 체크
             exit_reason = None
@@ -298,17 +317,17 @@ def _run_backtest_sim(df: pd.DataFrame, params: StrategyParams, settings: Settin
             
             if side == "LONG":
                 high_water = max(high_water, cur_p)
-                # 손익 계산
-                if cur_p <= entry_p * (1 - sl): exit_reason = "손절"
-                elif cur_p >= entry_p * (1 + tp): exit_reason = "익절"
+                # ATR 기반 가격 체크
+                if cur_p <= sl_p: exit_reason = "ATR손절"
+                elif cur_p >= tp_p: exit_reason = "ATR익절"
                 elif ts > 0 and cur_p <= high_water * (1 - ts) and cur_p > entry_p: exit_reason = "트레일링"
                 
                 if exit_reason:
                     pnl_pct = (cur_p - entry_p) / entry_p - (fee_rate * 2)
             else: # SHORT
                 high_water = min(high_water, cur_p)
-                if cur_p >= entry_p * (1 + sl): exit_reason = "손절"
-                elif cur_p <= entry_p * (1 - tp): exit_reason = "익절"
+                if cur_p >= sl_p: exit_reason = "ATR손절"
+                elif cur_p <= tp_p: exit_reason = "ATR익절"
                 elif ts > 0 and cur_p >= high_water * (1 + ts) and cur_p < entry_p: exit_reason = "트레일링"
                 
                 if exit_reason:
@@ -454,17 +473,21 @@ def _render_rules() -> None:
     settings = get_settings()
     params = load_params(settings)
 
-    st.write("진입(3개 조건 모두 만족 시 진입)")
+    st.write("진입(모든 필터 만족 시 진입)")
     st.write(
         f"- 돌파: 직전 {params.lookback}개 봉의 고가/저가 돌파\n"
         f"- 거래량: 현재 거래량 > 평균거래량 × {params.volume_mult}\n"
-        f"- 방향성 캔들: 양봉/음봉 + 몸통비율 ≥ {params.min_body_pct}%"
+        f"- 방향성 캔들: 양봉/음봉 + 몸통비율 ≥ {params.min_body_pct}%\n"
+        f"- 추세(EMA): 단기({params.ema_fast}) > 장기({params.ema_slow}) (LONG 기준)\n"
+        f"- MACD: MACD선 > Signal선 (LONG 기준)\n"
+        f"- RSI 필터: 과매수/과매도 구간 진입 전 체크"
     )
 
     st.write("청산(아래 중 하나라도 만족 시 청산)")
     st.write(
-        f"- 손절: {params.stop_loss_pct}%\n"
-        f"- 익절: {params.take_profit_pct}%\n"
+        f"- ATR 손절: 진입가 ± (ATR × {params.atr_multiplier_sl})\n"
+        f"- ATR 익절: 진입가 ± (ATR × {params.atr_multiplier_tp})\n"
+        f"- 트레일링 스탑: 고점대비 {params.trailing_stop_pct}%\n"
         f"- 시간청산: {params.max_hold_seconds}초\n"
         f"- 쿨다운: 거래 후 {params.cooldown_seconds}초"
     )
