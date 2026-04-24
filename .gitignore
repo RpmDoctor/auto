@@ -204,4 +204,7 @@ cython_debug/
 # Marimo
 marimo/_static/
 marimo/_lsp/
-__marimo__/
+# Custom: Ignore bot data and logs
+data/
+logs/
+config/auto_params.json
