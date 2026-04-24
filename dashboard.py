@@ -241,8 +241,19 @@ def main():
         st.write(f"🏦 **모드**: {'테스트넷' if settings.use_testnet else '메인넷'}")
         st.write(f"🧪 **가상매매**: {'ON' if settings.trading_dry_run else 'OFF'}")
         st.divider()
-        st.subheader("🔍 실시간 감시 종목")
-        watchlist = build_auto_watchlist(_get_client(), settings) if settings.watchlist_mode == "auto" else list(settings.watchlist_symbols)
+        if settings.watchlist_mode == "auto":
+            wl_items = build_auto_watchlist(
+                _get_client(),
+                size=settings.watchlist_size,
+                min_quote_volume_usdt=settings.watchlist_min_quote_usdt,
+                max_volatility_pct_24h=settings.watchlist_max_vol_pct_24h,
+                exclude_symbols=settings.watchlist_exclude_symbols,
+                exclude_keywords=settings.watchlist_exclude_keywords
+            )
+            watchlist = [i.symbol for i in wl_items]
+        else:
+            watchlist = list(settings.watchlist_symbols)
+        
         for s in watchlist: st.write(f"- {s} ({_coin_name(s)})")
         if st.button("새로고침 및 캐시 삭제"): st.cache_data.clear()
 
@@ -259,16 +270,13 @@ def main():
         c4.metric("매매 가능 여부", "YES" if acc.get("canTrade") else "NO")
     except: st.error("계좌 정보를 가져올 수 없습니다.")
 
-    # 7개 탭 구성 (23:44 당시 상태)
-    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "시장 인텔리전스", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
+    # 6개 핵심 탭 구성 (복구 완료)
+    tabs = st.tabs(["거래", "포지션", "시장 인텔리전스", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
 
     with tabs[0]: _render_trade_summary(settings.dashboard_trades_limit)
     with tabs[1]: _render_positions()
-    with tabs[2]:
-        st.subheader("📈 실시간 시그널 상태")
-        st.info("전략 엔진이 감시 종목들의 실시간 시그널을 분석 중입니다.")
-    with tabs[3]: _render_market_intelligence(watchlist)
-    with tabs[4]:
+    with tabs[2]: _render_market_intelligence(watchlist)
+    with tabs[3]:
         st.subheader("🤖 봇 자율 전략 분석 리포트")
         try:
             metrics_30, all_trades = load_report_snapshot(30)
@@ -294,8 +302,8 @@ def main():
             else: st.warning("성과 데이터를 분석 중입니다...")
         except Exception as e: st.error(f"성과 리포트 로드 오류: {e}")
         
-    with tabs[5]: _render_health_and_logs()
-    with tabs[6]: _render_rules()
+    with tabs[4]: _render_health_and_logs()
+    with tabs[5]: _render_rules()
 
 if __name__ == "__main__":
     main()
