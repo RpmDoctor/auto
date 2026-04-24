@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
+import threading
 import streamlit.components.v1 as components
 
 from config.settings import get_settings
@@ -31,6 +32,7 @@ from core.strategy import breakout_volume_direction_signal, calculate_rsi, calcu
 from core.data import fetch_futures_klines, fetch_historical_klines_paginated
 from core.backtest import PortfolioBacktester, calculate_portfolio_metrics
 from core.storage import save_report_snapshot, load_report_snapshot, get_latest_snapshot_info
+from core.optimizer import StrategyOptimizer
 from core.adaptive import apply_backtest_feedback
 from core.params import save_params
 
@@ -245,112 +247,6 @@ def _render_health() -> None:
             st.error(f"{r.name}: {r.detail}")
 
     st.write(f"전체 결과: {'정상' if all_ok else '실패'}")
-
-
-def _run_backtest_sim(df: pd.DataFrame, params: StrategyParams, settings: Settings):
-    """
-    단순 백테스트 시뮬레이션 엔진
-    """
-    if df.empty or len(df) < 100:
-        return None
-
-    # 결과 기록용
-    trades = []
-    
-    in_pos = False
-    side = None # "LONG", "SHORT"
-    entry_p = 0.0
-    high_water = 0.0
-    
-    # 전략 파라미터
-    sl = params.stop_loss_pct / 100.0
-    tp = params.take_profit_pct / 100.0
-    ts = params.trailing_stop_pct / 100.0
-    
-    # 수수료 (테이커 기준 왕복 약 0.1%)
-    fee_rate = 0.0005 # 편도 0.05%
-    
-    # 루프 (최소 지표 계산 기간 이후부터 시작)
-    start_idx = max(params.lookback, params.rsi_period, params.ema_slow) + 5
-    
-    sl_p = 0.0
-    tp_p = 0.0
-    
-    for i in range(int(start_idx), len(df)):
-        cur_df = df.iloc[:i+1] # 현재 시점까지의 데이터
-        cur_row = df.iloc[i]
-        cur_p = float(cur_row["close"])
-        
-        if not in_pos:
-            # 진입 시그널 체크
-            sig, reason = breakout_volume_direction_signal(
-                cur_df,
-                lookback=params.lookback,
-                volume_mult=params.volume_mult,
-                min_body_pct=params.min_body_pct,
-                rsi_period=params.rsi_period,
-                rsi_low=params.rsi_low,
-                rsi_high=params.rsi_high,
-                ema_fast_p=params.ema_fast,
-                ema_slow_p=params.ema_slow,
-                macd_fast=params.macd_fast,
-                macd_slow=params.macd_slow,
-                macd_signal=params.macd_signal,
-            )
-            
-            if sig in ["LONG", "SHORT"]:
-                in_pos = True
-                side = sig
-                entry_p = cur_p
-                high_water = cur_p
-                entry_time = cur_row["open_time"]
-                entry_reason = reason
-                
-                # ATR 기반 SL/TP 계산 (진입 시점)
-                atr_series = calculate_atr(cur_df)
-                atr_val = float(atr_series.iloc[-1])
-                if sig == "LONG":
-                    sl_p = entry_p - (atr_val * params.atr_multiplier_sl)
-                    tp_p = entry_p + (atr_val * params.atr_multiplier_tp)
-                else:
-                    sl_p = entry_p + (atr_val * params.atr_multiplier_sl)
-                    tp_p = entry_p - (atr_val * params.atr_multiplier_tp)
-        else:
-            # 청산 체크
-            exit_reason = None
-            pnl_pct = 0.0
-            
-            if side == "LONG":
-                high_water = max(high_water, cur_p)
-                # ATR 기반 가격 체크
-                if cur_p <= sl_p: exit_reason = "ATR손절"
-                elif cur_p >= tp_p: exit_reason = "ATR익절"
-                elif ts > 0 and cur_p <= high_water * (1 - ts) and cur_p > entry_p: exit_reason = "트레일링"
-                
-                if exit_reason:
-                    pnl_pct = (cur_p - entry_p) / entry_p - (fee_rate * 2)
-            else: # SHORT
-                high_water = min(high_water, cur_p)
-                if cur_p >= sl_p: exit_reason = "ATR손절"
-                elif cur_p <= tp_p: exit_reason = "ATR익절"
-                elif ts > 0 and cur_p >= high_water * (1 + ts) and cur_p < entry_p: exit_reason = "트레일링"
-                
-                if exit_reason:
-                    pnl_pct = (entry_p - cur_p) / entry_p - (fee_rate * 2)
-            
-            if exit_reason:
-                trades.append({
-                    "entry_time": entry_time,
-                    "exit_time": cur_row["open_time"],
-                    "side": side,
-                    "entry_p": entry_p,
-                    "exit_p": cur_p,
-                    "pnl_pct": pnl_pct * 100,
-                    "reason": exit_reason
-                })
-                in_pos = False
-
-    return pd.DataFrame(trades)
 
 
 def _render_trade_summary(symbol: str | None, limit: int) -> None:
@@ -639,7 +535,30 @@ def _render_logs() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Auto Trader Dashboard", layout="wide")
+    st.set_page_config(page_title="RpmDoctor Portfolio Bot", layout="wide", page_icon="📈")
+    
+    # 자율 최적화 엔진 시작 (대시보드에서도 백그라운드 구동)
+    if "optimizer_started" not in st.session_state:
+        settings = get_settings()
+        client = _get_client()
+        if client:
+            def _run_optimizer_in_bg():
+                optimizer = StrategyOptimizer(client, settings)
+                while True:
+                    try:
+                        wl = build_auto_watchlist(client, size=20)
+                        symbols = [item.symbol for item in wl]
+                        if symbols:
+                            optimizer.run_autonomous_optimization(symbols)
+                    except Exception:
+                        pass
+                    time.sleep(86400) # 24시간
+            
+            thread = threading.Thread(target=_run_optimizer_in_bg, daemon=True)
+            thread.start()
+            st.session_state.optimizer_started = True
+    
+    settings = get_settings()
     st.title("자동매매 대시보드 (바이낸스 선물 테스트넷)")
 
     # 기본: 1분마다 자동 새로고침 (추가 패키지 없이 동작)
