@@ -898,11 +898,11 @@ def main() -> None:
         else:
             st.info("아직 전략 변경 기록이 없습니다.")
 
-    with tabs[4]:
+    with tabs[5]:
         _render_health()
         _render_logs()
 
-    with tabs[5]:
+    with tabs[6]:
         _render_rules()
 
 
