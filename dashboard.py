@@ -534,8 +534,16 @@ def _render_logs() -> None:
         st.info("로그를 읽을 수 없습니다.")
 
 
+@st.cache_data(ttl=60) # 1분간 캐시 유지하여 중복 로드 방지
+def get_cached_report_snapshot(days: int):
+    return load_report_snapshot(days)
+
 def main() -> None:
-    st.set_page_config(page_title="RpmDoctor Portfolio Bot", layout="wide", page_icon="📈")
+    st.set_page_config(page_title="RpmDoctor Bot Briefing Center", layout="wide")
+    
+    # 상단 헤더
+    st.title("🛡️ Bot Briefing Center")
+    st.caption("자율 전략 최적화 엔진이 탑재된 실시간 매매 모니터링 시스템")
     
     # 자율 최적화 엔진 시작 (대시보드에서도 백그라운드 구동)
     if "optimizer_started" not in st.session_state:

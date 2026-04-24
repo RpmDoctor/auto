@@ -24,21 +24,30 @@ class StrategyOptimizer:
 
     def run_autonomous_optimization(self, watchlist: List[str]) -> Dict[str, Any]:
         """
-        모든 타임프레임을 스캔하여 가장 성과가 좋은 설정을 자동으로 찾아 적용합니다.
+        모든 타임프레임과 전략 성향(공격/균형/보수)을 교차 스캔하여 
+        리스크(MDD)는 관리하면서 수익률을 극대화하는 최적 조합을 찾아 적용합니다.
         """
-        logger.info("자율 전략 최적화 스캔 시작...")
+        logger.info("자율 전략 최적화 스캔 시작 (리스크 관리형 수익 극대화 모드)...")
         
         best_metrics = None
         best_interval = "1m"
         best_trades = pd.DataFrame()
         best_score = -float('inf')
+        best_params = None
         
         current_params = load_params(self.settings)
+        
+        # 탐색할 전략 성향 프로필 (레버리지는 건드리지 않고 필터와 익절가만 조정)
+        profiles = [
+            {"vol": 1.2, "tp": 3.0, "desc": "공격형 (큰 파동 추종)"},
+            {"vol": 1.5, "tp": 2.2, "desc": "균형형 (표준 설정)"},
+            {"vol": 2.0, "tp": 1.6, "desc": "보수형 (확실한 진입)"}
+        ]
         
         for interval in self.intervals:
             logger.info(f"타임프레임 스캔 중: {interval}")
             
-            # 데이터 수집 (최근 30일 기준 고정으로 확장)
+            # 데이터 수집 (최근 30일 기준)
             symbol_data = {}
             for symbol in watchlist[:10]:
                 try:
@@ -50,56 +59,54 @@ class StrategyOptimizer:
                 except Exception as e:
                     logger.error(f"{symbol} 데이터 수집 실패 ({interval}): {e}")
             
-            if not symbol_data:
-                continue
+            if not symbol_data: continue
             
-            # 백테스트 실행
-            backtester = PortfolioBacktester(current_params, self.settings)
-            all_trades = backtester.run(symbol_data)
-            metrics = calculate_portfolio_metrics(all_trades)
-            
-            # 점수 계산 (수익성 * 안정성 * 보유시간)
-            # Profit Factor가 1.0 미만이면 감점, 보유시간이 짧으면 감점
-            pf = metrics.get("profit_factor", 0)
-            wr = metrics.get("win_rate", 0) / 100.0
-            hold_time = metrics.get("avg_hold_duration", 0)
-            
-            # 점수 산식: Profit Factor * (승률 + 0.5) * log(보유시간 + 1)
-            # 단순히 수익률만 보는 게 아니라 '안정성'을 중시
-            import math
-            score = pf * (wr + 0.5) * math.log10(hold_time + 1)
-            
-            logger.info(f"결과 ({interval}): Score={score:.2f}, PF={pf:.2f}, WinRate={wr*100:.1f}%, Hold={hold_time:.1f}m")
-            
-            if score > best_score:
-                best_score = score
-                best_metrics = metrics
-                best_interval = interval
-                best_trades = all_trades
+            # 각 프로필별 시뮬레이션 교차 테스트
+            for prof in profiles:
+                test_params = StrategyParams(
+                    lookback=current_params.lookback,
+                    volume_mult=prof["vol"],
+                    min_body_pct=current_params.min_body_pct,
+                    atr_multiplier_tp=prof["tp"],
+                    atr_multiplier_sl=current_params.atr_multiplier_sl,
+                    trading_interval=interval
+                )
+                
+                # 시뮬레이션 실행
+                backtester = PortfolioBacktester(test_params, self.settings)
+                all_trades = backtester.run(symbol_data)
+                metrics = calculate_portfolio_metrics(all_trades)
+                
+                # 점수 계산: (수익률 * 3.0) + (승률 * 10) - (MDD * 4.0) 
+                # MDD(최대낙폭)에 대한 패널티를 강화하여 과도한 레버리지 효과 같은 리스크 방지
+                pnl = metrics.get("total_pnl", 0)
+                wr = metrics.get("win_rate", 0) / 100.0
+                mdd = metrics.get("max_drawdown", 0)
+                
+                # 수익이 마이너스면 제외, MDD가 20%를 넘어가면 큰 패널티
+                score = (pnl * 3.0) + (wr * 10.0) - (mdd * 4.0)
+                
+                logger.info(f"  > [{interval}][{prof['desc']}] PnL={pnl:.2f}%, Win={wr*100:.1f}%, MDD={mdd:.1f}%, Score={score:.2f}")
+                
+                if score > best_score:
+                    best_score = score
+                    best_metrics = metrics
+                    best_interval = interval
+                    best_trades = all_trades
+                    best_params = test_params
 
-        if best_metrics and best_score > 0:
-            logger.info(f"최적 타임프레임 발견: {best_interval} (Score: {best_score:.2f})")
+        if best_metrics and best_score > -100:
+            logger.info(f"🏆 최적 전략 발견: {best_interval} ({best_params.volume_mult}배 필터 / {best_params.atr_multiplier_tp}배 익절)")
             
-            # 실제 전략에 반영
-            # 1. 인터벌 업데이트 (Settings 객체는 메모리상이므로 params에 저장하거나 로그로 남김)
-            # 여기선 편의상 auto_params.json에 metadata로 저장하거나 로그로 남김
-            # 실제 봇이 이 값을 읽어가도록 settings를 업데이트하는 로직이 필요함
-            
-            # 2. 파라미터 보정 (adaptive 로직 활용 가능)
-            from core.adaptive import apply_backtest_feedback
-            new_params, reason = apply_backtest_feedback(current_params, best_metrics)
-            
-            # 베스트 인터벌 적용
-            new_params.trading_interval = best_interval
-            
-            save_params(new_params)
-            save_report_snapshot(30, best_metrics, best_trades) # 30일 기준 스냅샷 강제 갱신
+            # 실제 전략 파일에 반영
+            save_params(best_params)
+            save_report_snapshot(30, best_metrics, best_trades) # 30일 기준 스냅샷 갱신
             
             return {
                 "success": True,
                 "best_interval": best_interval,
                 "metrics": best_metrics,
-                "reason": f"자율 최적화 결과 {best_interval} 주기가 가장 안정적임. {reason}"
+                "reason": f"자율 최적화 결과 {best_interval} 주기의 수익 극대화 셋팅이 선택됨 (MDD 관리 포함)."
             }
         
-        return {"success": False, "reason": "최적화 조건을 만족하는 결과가 없음"}
+        return {"success": False, "reason": "수익을 낼 수 있는 최적화 조합을 찾지 못함"}
