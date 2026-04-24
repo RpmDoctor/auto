@@ -869,12 +869,23 @@ def main() -> None:
                     
                     st.subheader("전체 거래 내역 (진입/청산/포지션)")
                     view_trades = all_trades.copy()
+                    
+                    # 보유 시간 계산 (분 단위 -> 포맷팅)
+                    def format_duration(ms):
+                        minutes = int(ms / 60000)
+                        if minutes < 60:
+                            return f"{minutes}m"
+                        hours = minutes // 60
+                        mins = minutes % 60
+                        return f"{hours}h {mins}m"
+                    
+                    view_trades["보유시간"] = (view_trades["exit_time"] - view_trades["entry_time"]).apply(format_duration)
                     view_trades["진입시간"] = pd.to_datetime(view_trades["entry_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%m-%d %H:%M')
                     view_trades["청산시간"] = pd.to_datetime(view_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%m-%d %H:%M')
                     view_trades["방향"] = view_trades["side"]
                     view_trades["수익률(%)"] = view_trades["pnl_pct"].round(2)
                     
-                    display_cols = ["symbol", "방향", "진입시간", "청산시간", "entry_p", "exit_p", "수익률(%)", "reason"]
+                    display_cols = ["symbol", "방향", "진입시간", "청산시간", "보유시간", "entry_p", "exit_p", "수익률(%)", "reason"]
                     # 정렬 먼저 하고 컬럼 슬라이싱
                     sorted_trades = view_trades.sort_values("exit_time", ascending=False)
                     st.dataframe(sorted_trades[display_cols], width="stretch", height=500)
