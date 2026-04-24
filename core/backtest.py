@@ -75,7 +75,9 @@ class PortfolioBacktester:
         
         sl_p = 0.0
         tp_p = 0.0
-        fee_rate = 0.0005
+        fee_rate = 0.0006 # 바이낸스 시장가 수수료 약 0.05%~0.06%
+        slippage = 0.0005 # 시장가 슬리피지 약 0.05% 가정
+        total_cost_rate = (fee_rate + slippage) * 2 # 왕복 비용 약 0.22%
         ts_pct = self.params.trailing_stop_pct / 100.0
 
         # 루프 시작점
@@ -135,13 +137,13 @@ class PortfolioBacktester:
                     if cur_p <= sl_p: exit_reason = "ATR손절"
                     elif cur_p >= tp_p: exit_reason = "ATR익절"
                     elif ts_pct > 0 and cur_p <= high_water * (1 - ts_pct) and cur_p > entry_p: exit_reason = "트레일링"
-                    if exit_reason: pnl_pct = (cur_p - entry_p) / entry_p - (fee_rate * 2)
+                    if exit_reason: pnl_pct = (cur_p - entry_p) / entry_p - total_cost_rate
                 else: # SHORT
                     high_water = min(high_water, cur_p)
                     if cur_p >= sl_p: exit_reason = "ATR손절"
                     elif cur_p <= tp_p: exit_reason = "ATR익절"
                     elif ts_pct > 0 and cur_p >= high_water * (1 + ts_pct) and cur_p < entry_p: exit_reason = "트레일링"
-                    if exit_reason: pnl_pct = (entry_p - cur_p) / entry_p - (fee_rate * 2)
+                    if exit_reason: pnl_pct = (entry_p - cur_p) / entry_p - total_cost_rate
 
                 if exit_reason:
                     trades.append({
@@ -187,11 +189,16 @@ def calculate_portfolio_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
     gross_loss = abs(losses["pnl_pct"].sum())
     profit_factor = gross_profit / gross_loss if gross_loss != 0 else float('inf')
 
+    # 보유 기간 계산 (분 단위)
+    trades_df["hold_duration"] = (trades_df["exit_time"] - trades_df["entry_time"]) / (1000 * 60)
+    avg_hold_duration = trades_df["hold_duration"].mean()
+
     return {
         "total_trades": total_trades,
         "win_rate": win_rate,
         "total_pnl": total_pnl,
         "avg_pnl": avg_pnl,
         "max_drawdown": max_dd,
-        "profit_factor": profit_factor
+        "profit_factor": profit_factor,
+        "avg_hold_duration": avg_hold_duration
     }

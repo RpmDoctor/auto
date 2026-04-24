@@ -33,6 +33,7 @@ class StrategyParams:
     daily_loss_limit_pct: float
     atr_multiplier_sl: float
     atr_multiplier_tp: float
+    trading_interval: str # 자율 선택된 타임프레임
 
 
 def _coerce_int(value: Any, fallback: int) -> int:
@@ -72,6 +73,7 @@ def default_params_from_settings(settings: Settings) -> StrategyParams:
         daily_loss_limit_pct=settings.risk_daily_loss_limit_pct,
         atr_multiplier_sl=settings.risk_atr_multiplier_sl,
         atr_multiplier_tp=settings.risk_atr_multiplier_tp,
+        trading_interval=settings.trading_interval,
     )
 
 
@@ -109,6 +111,7 @@ def load_params(settings: Settings) -> StrategyParams:
         daily_loss_limit_pct=_coerce_float(data.get("daily_loss_limit_pct"), params.daily_loss_limit_pct),
         atr_multiplier_sl=_coerce_float(data.get("atr_multiplier_sl"), params.atr_multiplier_sl),
         atr_multiplier_tp=_coerce_float(data.get("atr_multiplier_tp"), params.atr_multiplier_tp),
+        trading_interval=str(data.get("trading_interval", params.trading_interval)),
     )
 
 

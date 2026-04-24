@@ -184,20 +184,26 @@ def apply_backtest_feedback(
     total_pnl = metrics.get("total_pnl", 0.0)
     mdd = metrics.get("max_drawdown", 0.0)
     
-    # 1. 승률이 낮으면 진입 조건을 더 까다롭게 (volume_mult 상향)
+    # 1. 승률이 낮으면 진입 조건을 더 까다롭게 (volume_mult 및 min_body_pct 상향)
     if win_rate < 0.45:
-        new.volume_mult = round(min(new.volume_mult + 0.2, 3.0), 2)
-        reasons.append(f"백테스트 승률 저조({win_rate*100:.1f}%) -> 진입 필터 강화")
+        new.volume_mult = round(min(new.volume_mult + 0.3, 3.5), 2)
+        new.min_body_pct = round(min(new.min_body_pct + 0.05, 0.5), 2)
+        reasons.append(f"백테스트 승률 저조({win_rate*100:.1f}%) -> 진입 필터 대폭 강화")
+    elif win_rate > 0.65:
+        # 성과가 너무 좋으면 약간 완화하여 기회 확대
+        new.volume_mult = round(max(new.volume_mult - 0.1, 1.2), 2)
+        reasons.append(f"백테스트 성과 우수({win_rate*100:.1f}%) -> 진입 필터 소폭 완화")
         
-    # 2. 누적 수익이 마이너스면 레버리지 축소
+    # 2. 누적 수익이 마이너스면 레버리지 축소 및 손절폭 조정
     if total_pnl < 0:
         new.leverage = max(1, new.leverage - 1)
-        reasons.append(f"백테스트 손실({total_pnl:.2f}%) -> 레버리지 축소")
-        
-    # 3. MDD가 너무 크면 손절을 더 타이트하게
-    if mdd > 10.0:
         new.atr_multiplier_sl = round(max(new.atr_multiplier_sl - 0.2, 1.0), 2)
-        reasons.append(f"백테스트 MDD 과다({mdd:.1f}%) -> 손절선 상향")
+        reasons.append(f"백테스트 손실({total_pnl:.2f}%) -> 레버리지 축소 및 손절 타이트화")
+        
+    # 3. MDD가 너무 크면 추세 필터 및 익절폭 상향
+    if mdd > 10.0:
+        new.atr_multiplier_tp = round(min(new.atr_multiplier_tp + 0.5, 6.0), 2)
+        reasons.append(f"백테스트 MDD 과다({mdd:.1f}%) -> 손익비 개선(TP 확대)")
 
     reason_str = " | ".join(reasons)
     return new, reason_str

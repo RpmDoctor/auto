@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import threading
 
 from binance.client import Client
 
@@ -15,6 +16,7 @@ from core.params import StrategyParams, load_params
 from core.strategy import breakout_volume_direction_signal, calculate_atr
 from core.trade import append_trade_log, log_completed_trade, set_futures_leverage, set_futures_margin_type_isolated
 from core.watchlist import build_auto_watchlist
+from core.optimizer import StrategyOptimizer
 
 
 def _utc_now() -> str:
@@ -186,6 +188,25 @@ def _should_exit(state: BotState, mark: float, params: StrategyParams) -> tuple[
     return False, ""
 
 
+def _run_optimizer_loop(client: Client, settings: Settings):
+    """
+    24시간마다 백그라운드에서 최적의 파라미터와 타임프레임을 찾아 자동 갱신합니다.
+    """
+    optimizer = StrategyOptimizer(client, settings)
+    while True:
+        try:
+            # 현재 관심 종목 리스트 가져오기
+            wl = build_auto_watchlist(client, size=20)
+            symbols = [item.symbol for item in wl]
+            if symbols:
+                optimizer.run_autonomous_optimization(symbols)
+        except Exception as e:
+            print(f"[{datetime.now().isoformat()}] [Optimizer] 자율 최적화 오류: {e}")
+        
+        # 24시간 대기 (테스트를 위해 짧게 조정 가능)
+        time.sleep(86400)
+
+
 def run_bot(client: Client, settings: Settings) -> None:
     """
     자동 진입/청산 루프.
@@ -193,7 +214,10 @@ def run_bot(client: Client, settings: Settings) -> None:
     params = load_params(settings)
     state = BotState()
 
-    print("=== BOT START ===")
+    # 자율 최적화 스레드 시작
+    threading.Thread(target=_run_optimizer_loop, args=(client, settings), daemon=True).start()
+
+    print("=== BOT START (Autonomous Mode) ===")
     print(f"mode=testnet={settings.use_testnet}, dry_run={settings.trading_dry_run}, max_trades={settings.bot_max_trades}")
 
     while True:
@@ -359,7 +383,7 @@ def run_bot(client: Client, settings: Settings) -> None:
             df = fetch_futures_klines(
                 client,
                 symbol=symbol,
-                interval=settings.trading_interval,
+                interval=params.trading_interval,
                 limit=settings.trading_limit,
             )
             signal, reason = breakout_volume_direction_signal(
