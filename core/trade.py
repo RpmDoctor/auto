@@ -113,6 +113,7 @@ def log_completed_trade(
     roi_pct: float,
     fee: float = 0.0,
     exit_reason: str | None = None,
+    leverage: float = 1.0,
 ) -> None:
     """
     진입부터 청산까지의 한 사이클을 logs/trade_history.csv 에 기록합니다.
@@ -132,11 +133,12 @@ def log_completed_trade(
         "roi_pct": round(roi_pct, 2),
         "fee": round(fee, 4),
         "exit_reason": exit_reason or "",
+        "leverage": leverage,
     }
 
     fieldnames = [
         "symbol", "side", "quantity", "entry_price", "exit_price", 
-        "entry_time", "exit_time", "pnl", "roi_pct", "fee", "exit_reason"
+        "entry_time", "exit_time", "pnl", "roi_pct", "fee", "exit_reason", "leverage"
     ]
 
     write_header = not path.exists()

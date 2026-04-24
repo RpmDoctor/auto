@@ -1,5 +1,5 @@
 """
-RpmDoctor Bot Briefing Center - Premium Edition (Full Recovery)
+RpmDoctor Bot Briefing Center - Premium Edition (23:44 Recovery)
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import time
 import threading
 from pathlib import Path
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
@@ -88,7 +89,6 @@ def _render_trade_summary(limit: int):
         c4.metric("수수료", f"{summary.commission_usdt:.2f}")
         
         st.markdown("#### 최근 체결 리스트")
-        # 테이블 스타일링
         df_view = df.sort_values("time", ascending=False).copy()
         st.dataframe(df_view, width="stretch", height=400)
     except Exception as e: st.error(f"거래 로드 오류: {e}")
@@ -115,51 +115,79 @@ def _render_positions():
                 st.divider()
     except Exception as e: st.error(f"포지션 로드 오류: {e}")
 
-def _render_forward_test():
-    st.subheader("🧪 실시간 가상 시뮬레이션 (Forward Test)")
-    st.caption("과거 데이터가 아닌, **지금 이 시간** 실제 시장 상황에 봇이 어떻게 반응하는지 실시간 중계합니다.")
+@st.cache_data(ttl=300)
+def _get_market_intel_data(symbols: list[str]):
+    if not symbols: return None
+    client = _get_client()
+    settings = get_settings()
+    params = load_params(settings)
     
-    v_pos_path = Path("data") / "virtual_position.json"
-    history_path = Path("logs") / "trade_history.csv"
-    
-    if v_pos_path.exists():
+    results = []
+    # 15개 심볼까지만 분석하여 속도 확보
+    for s in symbols[:15]:
         try:
-            v_pos = json.loads(v_pos_path.read_text(encoding="utf-8"))
-            if v_pos.get("symbol"):
-                st.markdown("### 📡 실시간 가상 포지션 중계")
-                c1, c2, c3, c4, c5 = st.columns(5)
-                entry, mark, side = v_pos["entry_price"], v_pos["mark_price"], v_pos["side"]
-                pnl = (mark - entry) / entry * 100 if side == "LONG" else (entry - mark) / entry * 100
-                c1.metric("심볼", v_pos["symbol"])
-                c2.metric("방향", side)
-                c3.metric("진입가", f"{entry:,.4f}")
-                c4.metric("현재가", f"{mark:,.4f}")
-                c5.metric("평가손익(%)", f"{pnl:.2f}%", delta=f"{pnl:.2f}%")
-                st.divider()
-        except: pass
+            df = fetch_futures_klines(client, s, params.trading_interval, limit=100)
+            if df.empty: continue
+            sig = breakout_volume_direction_signal(df, params)
+            rsi = calculate_rsi(df).iloc[-1]
+            results.append({"symbol": s, "trend": sig, "rsi": rsi})
+        except: continue
+    return results
+
+@st.cache_data(ttl=3600)
+def _get_fear_and_greed():
+    import requests
+    try:
+        r = requests.get("https://api.alternative.me/fng/", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            val = int(data["data"][0]["value"])
+            cls = data["data"][0]["value_classification"]
+            return val, cls
+    except: pass
+    return None, "N/A"
+
+def _render_market_intelligence(symbols: list[str]):
+    st.subheader("🌐 시장 인텔리전스 보고서")
     
-    if history_path.exists():
-        try:
-            df = pd.read_csv(history_path)
-            if not df.empty:
-                st.markdown("### 📜 실시간 가상 매매 성적표")
-                win_r = (len(df[df["roi_pct"] > 0]) / len(df) * 100) if not df.empty else 0
-                m1, m2, m3 = st.columns(3)
-                m1.metric("총 가상 거래", f"{len(df)}회")
-                m2.metric("가상 승률", f"{win_r:.1f}%")
-                m3.metric("누적 가상 수익률", f"{df['roi_pct'].sum():.2f}%")
-                
-                # 테이블 구성 복원
-                st.dataframe(df.iloc[::-1], width="stretch", height=300)
-                st.markdown("### 📈 실시간 가상 수익 곡선")
-                st.line_chart(df["roi_pct"].cumsum())
-        except: st.info("가상 매매 히스토리를 불러오는 중...")
+    # 1. 공포/탐욕 지수
+    fng_val, fng_cls = _get_fear_and_greed()
+    if fng_val:
+        st.markdown(f"#### 🎭 공포 & 탐욕 지수: **{fng_val} ({fng_cls})**")
+        st.progress(fng_val / 100)
+        
+    intel = _get_market_intel_data(symbols)
+    if not intel:
+        st.info("시장 데이터를 수집 중입니다...")
+        return
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        longs = len([i for i in intel if i["trend"] == "LONG"])
+        shorts = len([i for i in intel if i["trend"] == "SHORT"])
+        total = len(intel)
+        st.markdown("#### ⚖️ 시장 심리 (Long vs Short)")
+        st.write(f"📈 롱 추세 종목: {longs}/{total} ({(longs/total*100):.1f}%)")
+        st.write(f"📉 숏 추세 종목: {shorts}/{total} ({(shorts/total*100):.1f}%)")
+        sentiment = "BULLISH" if longs > shorts else "BEARISH"
+        st.success(f"현재 시장 주도권: **{sentiment}**")
+        
+    with c2:
+        avg_rsi = sum([i["rsi"] for i in intel]) / len(intel)
+        st.markdown("#### 🌡️ 시장 과열도 (Avg RSI)")
+        st.metric("평균 RSI", f"{avg_rsi:.1f}", delta="과열" if avg_rsi > 70 else "침체" if avg_rsi < 30 else "중립")
+        if avg_rsi > 60: st.warning("시장 전반이 과열 상태입니다. 눌림목 매수를 권장합니다.")
+        elif avg_rsi < 40: st.info("시장 전반이 침체 상태입니다. 반등 매수를 고려해 보세요.")
 
 def _render_rules():
     st.subheader("📏 현재 적용된 매매 전략 규칙 (Premium)")
     settings = get_settings()
     params = load_params(settings)
-    st.markdown(f"### 🤖 지능형 자율 엔진 상태: **{'활성화' if settings.optimizer_enable else '비활성화'}**")
+    
+    # Optimizer 상태 가드 (AttributeError 방지)
+    opt_status = getattr(settings, "optimizer_enable", False)
+    st.markdown(f"### 🤖 지능형 자율 엔진 상태: **{'활성화' if opt_status else '비활성화'}**")
+    
     st.info(f"현재 봇은 **{params.trading_interval}** 주기를 최적으로 판단하여 **{params.leverage}배** 레버리지를 사용 중입니다.")
     
     c1, c2 = st.columns(2)
@@ -168,12 +196,11 @@ def _render_rules():
         st.write(f"🔹 **거래량 폭발**: 최근 {params.lookback}봉 평균 대비 **{params.volume_mult}배** 이상 시")
         st.write(f"🔹 **캔들 에너지**: 몸통 비율 **{params.min_body_pct}%** 이상의 장대봉 형성 시")
         st.write(f"🔹 **추세 필터**: EMA {params.ema_fast} / {params.ema_slow} 정배열(LONG) 또는 역배열(SHORT)")
-        st.write(f"🔹 **보조 지표**: RSI {params.rsi_low}~{params.rsi_high} 범위 및 MACD 골든/데드크로스 확인")
     with c2:
         st.markdown("#### 📤 청산 조건 (Exit Logic)")
-        st.write(f"🔸 **손절/익절**: ATR({params.rsi_period})의 **{params.atr_multiplier_sl}x / {params.atr_multiplier_tp}x** 적용")
-        st.write(f"🔸 **수익 보존**: 고점 대비 **{params.trailing_stop_pct}%** 트레일링 스탑 추적")
-        st.write(f"🔸 **시간 제한**: 진입 후 **{params.max_hold_seconds // 3600}시간** 경과 시 타임아웃 청산")
+        st.write(f"🔸 **손절/익절**: ATR 기반 **{params.atr_multiplier_sl}x / {params.atr_multiplier_tp}x** 적용")
+        st.write(f"🔸 **수익 보존**: 고점 대비 **{params.trailing_stop_pct}%** 트레일링 스탑")
+        st.write(f"🔸 **시간 제한**: 진입 후 **{params.max_hold_seconds // 3600}시간** 경과 시 타임아웃")
     st.divider()
     st.caption("※ 위 규칙들은 봇이 24시간마다 시장 데이터를 학습하여 스스로 최적의 값으로 갱신합니다.")
 
@@ -194,10 +221,16 @@ def _render_health_and_logs():
         st.code("\n".join(logs[::-1]), language="text")
     else: st.info("로그 파일이 없습니다.")
 
+def format_duration(minutes: float) -> str:
+    if minutes < 60: return f"{int(minutes)}m"
+    h = int(minutes // 60)
+    m = int(minutes % 60)
+    return f"{h}h {m}m"
+
 def main():
     st.set_page_config(page_title="RpmDoctor Bot Briefing Center", layout="wide")
     st.title("🛡️ Bot Briefing Center")
-    st.caption("자율 전략 최적화 엔진이 탑재된 실시간 매매 모니터링 시스템")
+    st.caption("자율 전략 최적화 엔진이 탑재된 실시간 매매 모니터링 시스템 (v23.44 Recovery)")
 
     settings = get_settings()
     
@@ -209,7 +242,7 @@ def main():
         st.write(f"🧪 **가상매매**: {'ON' if settings.trading_dry_run else 'OFF'}")
         st.divider()
         st.subheader("🔍 실시간 감시 종목")
-        watchlist = _get_auto_watchlist_symbols() if settings.watchlist_mode == "auto" else list(settings.watchlist_symbols)
+        watchlist = build_auto_watchlist(_get_client(), settings) if settings.watchlist_mode == "auto" else list(settings.watchlist_symbols)
         for s in watchlist: st.write(f"- {s} ({_coin_name(s)})")
         if st.button("새로고침 및 캐시 삭제"): st.cache_data.clear()
 
@@ -226,20 +259,16 @@ def main():
         c4.metric("매매 가능 여부", "YES" if acc.get("canTrade") else "NO")
     except: st.error("계좌 정보를 가져올 수 없습니다.")
 
-    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "시장 인텔리전스", "실시간 시뮬레이션", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
+    # 7개 탭 구성 (23:44 당시 상태)
+    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "시장 인텔리전스", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
 
     with tabs[0]: _render_trade_summary(settings.dashboard_trades_limit)
     with tabs[1]: _render_positions()
     with tabs[2]:
         st.subheader("📈 실시간 시그널 상태")
-        if watchlist: st.dataframe(_get_live_signals(watchlist), width="stretch", height=500)
-    with tabs[3]:
-        # 시장 인텔리전스 (프리미엄 로직 복원)
-        st.subheader("🌐 시장 인텔리전스 보고서")
-        st.info("현재 장세의 장단기 추세를 분석하여 봇이 실시간 가이드를 제공합니다.")
-        # ... (이전의 풍부한 인텔리전스 UI 로직)
-    with tabs[4]: _render_forward_test()
-    with tabs[5]:
+        st.info("전략 엔진이 감시 종목들의 실시간 시그널을 분석 중입니다.")
+    with tabs[3]: _render_market_intelligence(watchlist)
+    with tabs[4]:
         st.subheader("🤖 봇 자율 전략 분석 리포트")
         try:
             metrics_30, all_trades = load_report_snapshot(30)
@@ -249,10 +278,24 @@ def main():
                 m2.metric("종합 승률", f"{metrics_30['win_rate']:.1f}%")
                 m3.metric("최대 낙폭", f"{metrics_30['max_drawdown']:.2f}%")
                 m4.metric("분석 거래수", f"{metrics_30['total_trades']}회")
+                
+                st.markdown("#### 전체 거래 내역 (레버리지/보유시간 반영)")
+                view_trades = all_trades.copy()
+                view_trades["보유시간"] = (view_trades["exit_time"] - view_trades["entry_time"]).apply(format_duration)
+                view_trades["진입시간"] = pd.to_datetime(view_trades["entry_time"], unit='ms', utc=True).dt.strftime('%m-%d %H:%M')
+                view_trades["청산시간"] = pd.to_datetime(view_trades["exit_time"], unit='ms', utc=True).dt.strftime('%m-%d %H:%M')
+                view_trades["레버리지"] = view_trades.get("leverage", 1).apply(lambda x: f"{int(x)}x")
+                
+                cols = ["symbol", "side", "레버리지", "진입시간", "청산시간", "보유시간", "entry_p", "exit_p", "pnl_pct"]
+                st.dataframe(view_trades[cols].sort_values("exit_time", ascending=False), width="stretch")
+                
+                st.markdown("#### 누적 수익 곡선")
                 st.line_chart(all_trades.sort_values("exit_time")["pnl_pct"].cumsum())
-        except: st.warning("성과 데이터를 분석 중입니다...")
-    with tabs[6]: _render_health_and_logs()
-    with tabs[7]: _render_rules()
+            else: st.warning("성과 데이터를 분석 중입니다...")
+        except Exception as e: st.error(f"성과 리포트 로드 오류: {e}")
+        
+    with tabs[5]: _render_health_and_logs()
+    with tabs[6]: _render_rules()
 
 if __name__ == "__main__":
     main()
