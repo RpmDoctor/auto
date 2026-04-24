@@ -762,7 +762,7 @@ def main() -> None:
             with c1: st.metric("최근 14일 예상 수익", f"{metrics['total_pnl']:.2f}%")
             with c2: st.metric("시뮬레이션 횟수", f"{metrics['total_trades']}회")
             with c3: st.metric("종합 승률", f"{metrics['win_rate']:.1f}%")
-            with c4: st.metric("평균 보유 시간", f"{metrics['avg_hold_duration']:.1f}분")
+            with c4: st.metric("평균 보유 시간", f"{metrics.get('avg_hold_duration', 0):.1f}분")
             with c5: st.metric("최대 리스크(MDD)", f"{metrics['max_drawdown']:.2f}%")
 
             # 수익률 차트
