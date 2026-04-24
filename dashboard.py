@@ -670,31 +670,62 @@ def main() -> None:
         settings = get_settings()
         params = load_params(settings)
         
-        # 최신 14일 분석 결과 로드 (Optimizer가 저장한 값)
-        metrics, all_trades = load_report_snapshot(14)
+        # 최신 30일 분석 결과 로드 (Optimizer가 저장한 값)
+        metrics_30, all_trades = load_report_snapshot(30)
         
-        if metrics:
+        if metrics_30 is not None and not all_trades.empty:
             st.info(f"💡 현재 봇은 **{params.trading_interval}** 주기를 최적으로 판단하여 자율 매매 중입니다.")
             
-            # 상단 지표 카드
-            c1, c2, c3, c4, c5 = st.columns(5)
-            with c1: st.metric("최근 14일 예상 수익", f"{metrics['total_pnl']:.2f}%")
-            with c2: st.metric("시뮬레이션 횟수", f"{metrics['total_trades']}회")
-            with c3: st.metric("종합 승률", f"{metrics['win_rate']:.1f}%")
-            with c4: st.metric("평균 보유 시간", f"{metrics.get('avg_hold_duration', 0):.1f}분")
-            with c5: st.metric("최대 리스크(MDD)", f"{metrics['max_drawdown']:.2f}%")
+            # 기간별 데이터 분리 및 메트릭 계산 (7일, 14일, 30일)
+            now_ts = all_trades["exit_time"].max()
+            trades_14 = all_trades[all_trades["exit_time"] >= (now_ts - 14 * 86400 * 1000)]
+            trades_7 = all_trades[all_trades["exit_time"] >= (now_ts - 7 * 86400 * 1000)]
+            
+            metrics_14 = calculate_portfolio_metrics(trades_14)
+            metrics_7 = calculate_portfolio_metrics(trades_7)
 
-            # 수익률 차트
-            st.subheader("자율 최적화 모델 수익률 추이")
+            def display_metric_row(label, m):
+                # m이 dict가 아닐 경우 대비 (비어있는 경우 등)
+                if not m or m.get("total_trades", 0) == 0:
+                    st.write(f"**{label}**: 데이터 부족")
+                    return
+                cols = st.columns([1.5, 2, 2, 2, 2, 2])
+                cols[0].write(f"**{label}**")
+                cols[1].metric("예상 수익", f"{m['total_pnl']:.2f}%")
+                cols[2].metric("거래 횟수", f"{m['total_trades']}회")
+                cols[3].metric("종합 승률", f"{m['win_rate']:.1f}%")
+                cols[4].metric("평균 보유", f"{m.get('avg_hold_duration', 0):.1f}분")
+                cols[5].metric("최대 리스크", f"{m['max_drawdown']:.2f}%")
+
+            st.divider()
+            display_metric_row("최근 7일 성과", metrics_7)
+            display_metric_row("최근 14일 성과", metrics_14)
+            display_metric_row("최근 30일 성과", metrics_30)
+            st.divider()
+
+            # 수익률 차트 (30일 기준)
+            st.subheader("자율 최적화 모델 수익률 추이 (최근 30일)")
             all_trades = all_trades.sort_values("exit_time")
             all_trades["cum_pnl"] = all_trades["pnl_pct"].cumsum()
             all_trades["exit_time_dt"] = pd.to_datetime(all_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul")
             st.line_chart(all_trades.set_index("exit_time_dt")["cum_pnl"])
 
-            with st.expander("세부 종목별 성과 및 거래 내역"):
+            with st.expander("📊 세부 종목별 성과 및 거래 내역 확인"):
+                st.subheader("종목별 요약")
                 symbol_summary = all_trades.groupby("symbol")["pnl_pct"].agg(["count", "sum", "mean"]).reset_index()
                 symbol_summary.columns = ["심볼", "거래횟수", "누적수익률(%)", "평균수익률(%)"]
                 st.dataframe(symbol_summary.sort_values("누적수익률(%)", ascending=False), width="stretch")
+                
+                st.subheader("전체 거래 내역 (진입/청산/포지션)")
+                view_trades = all_trades.copy()
+                view_trades["진입시간"] = pd.to_datetime(view_trades["entry_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%m-%d %H:%M')
+                view_trades["청산시간"] = pd.to_datetime(view_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%m-%d %H:%M')
+                view_trades["방향"] = view_trades["side"]
+                view_trades["수익률(%)"] = view_trades["pnl_pct"].round(2)
+                
+                # 필요한 컬럼만 보기 좋게 순서 조정
+                display_cols = ["symbol", "방향", "진입시간", "청산시간", "entry_p", "exit_p", "수익률(%)", "reason"]
+                st.dataframe(view_trades[display_cols].sort_values("exit_time", ascending=False), width="stretch", height=500)
         else:
             st.warning("아직 자율 최적화 분석 데이터가 없습니다. 봇을 실행하면 백그라운드에서 첫 분석을 시작합니다.")
 
