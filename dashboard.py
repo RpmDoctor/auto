@@ -883,7 +883,10 @@ def main() -> None:
                     view_trades["진입시간"] = pd.to_datetime(view_trades["entry_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%m-%d %H:%M')
                     view_trades["청산시간"] = pd.to_datetime(view_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%m-%d %H:%M')
                     view_trades["방향"] = view_trades["side"]
-                    view_trades["레버리지"] = view_trades.get("leverage", 1).apply(lambda x: f"{int(x)}x")
+                    if "leverage" in view_trades.columns:
+                        view_trades["레버리지"] = view_trades["leverage"].apply(lambda x: f"{int(x)}x")
+                    else:
+                        view_trades["레버리지"] = "1x"
                     view_trades["수익률(%)"] = view_trades["pnl_pct"].round(2)
                     
                     display_cols = ["symbol", "방향", "레버리지", "진입시간", "청산시간", "보유시간", "entry_p", "exit_p", "수익률(%)", "reason"]
