@@ -739,7 +739,9 @@ def main() -> None:
                     view_trades["수익률(%)"] = view_trades["pnl_pct"].round(2)
                     
                     display_cols = ["symbol", "방향", "진입시간", "청산시간", "entry_p", "exit_p", "수익률(%)", "reason"]
-                    st.dataframe(view_trades[display_cols].sort_values("exit_time", ascending=False), width="stretch", height=500)
+                    # 정렬 먼저 하고 컬럼 슬라이싱
+                    sorted_trades = view_trades.sort_values("exit_time", ascending=False)
+                    st.dataframe(sorted_trades[display_cols], width="stretch", height=500)
             else:
                 st.warning("🤖 봇이 현재 30일치 데이터를 정밀 분석 중입니다. (약 2~3분 소요)")
                 st.caption("분석이 완료되면 자동으로 성과 리포트가 갱신됩니다.")
