@@ -1,11 +1,10 @@
 """
-RpmDoctor™ Bot 자율 전략 분석 및 최적화 보고 시스템 (v23.44 원본 디자인 복원)
+RpmDoctor™ Autonomous Strategy Dashboard - The Definitive Restoration (v23.44.Full)
 """
 
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -20,196 +19,189 @@ from core.analytics import (
     summarize_futures_trades,
 )
 from core.client import create_binance_client
-from core.health import run_health_checks
 from core.watchlist import build_auto_watchlist
 from core.params import load_params
-from core.strategy import breakout_volume_direction_signal
 from core.storage import load_report_snapshot
+
+# Constants
+USD_KRW = 1350.0  # KRW Conversion Rate
 
 # Helper functions
 def _coin_name(symbol: str) -> str:
     COIN_KR = {
         "BTC": "비트코인", "ETH": "이더리움", "BNB": "바이낸스", "XRP": "리플",
         "SOL": "솔라나", "ADA": "에이다", "DOGE": "도지코인", "AVAX": "아발란체",
-        "DOT": "폴카닷", "LINK": "체인링크", "MATIC": "폴리곤", "TRX": "트론",
     }
     s = (symbol or "").upper()
     base = s[:-4] if s.endswith("USDT") else s
     return COIN_KR.get(base, base)
 
 def format_duration(minutes: float) -> str:
-    if minutes < 60: return f"{int(minutes)}m"
+    if minutes < 60: return f"{minutes:.1f}분"
     h, m = int(minutes // 60), int(minutes % 60)
-    return f"{h}h {m}m"
+    return f"{h}시간 {m}분"
 
 @st.cache_resource
 def _get_client():
     return create_binance_client(get_settings())
 
-# --- RENDER FUNCTIONS ---
+# --- UI COMPONENTS ---
+
+def _render_header_krw(acc):
+    try:
+        balance = float(acc.get('totalWalletBalance', 0))
+        margin = float(acc.get('totalMarginBalance', 0))
+        unrealized = float(acc.get('totalUnrealizedProfit', 0))
+        
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with st.container():
+            st.markdown(
+                f"<div style='text-align: right; font-size: 0.8rem; color: #888;'>"
+                f"약 ₩{balance*USD_KRW:,.0f} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "
+                f"약 ₩{margin*USD_KRW:,.0f} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "
+                f"약 ₩{unrealized*USD_KRW:,.0f}</div>", 
+                unsafe_allow_html=True
+            )
+    except: pass
 
 def _render_trade_summary(settings):
-    st.subheader("📊 실거래 요약 및 내역")
+    st.subheader("📊 전체 거래 내역 (진입/청산/포지션)")
     try:
         client = _get_client()
         trades_raw = client.futures_account_trades(limit=settings.dashboard_trades_limit)
         df = futures_trades_to_df(trades_raw)
         if df.empty:
-            st.info("실제 거래 내역이 아직 없습니다.")
+            st.info("표시할 거래 내역이 없습니다.")
             return
         
-        summary = summarize_futures_trades(add_derived_columns(df))
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("총 거래", f"{summary.trades_count}회")
-        c2.metric("누적 수익", f"{summary.realized_pnl:.2f} USDT")
-        c3.metric("승률", f"{(summary.win_rate*100):.1f}%")
-        c4.metric("수수료", f"{summary.commission_usdt:.2f}")
-        
-        st.markdown("#### 최근 체결 리스트")
+        df = add_derived_columns(df)
         df_view = df.sort_values("time", ascending=False).copy()
+        
+        # 캡처본 컬럼 명칭 적용
         df_view.rename(columns={
-            "symbol": "심볼", "side": "방향", "qty": "수량", 
+            "symbol": "symbol", "side": "방향", "qty": "수량", 
             "price": "체결가", "realizedPnl": "실현손익", "time": "시간"
         }, inplace=True)
-        st.dataframe(df_view, use_container_width=True)
-    except Exception as e: st.error(f"거래 로드 오류: {e}")
-
-def _render_positions():
-    st.subheader("🎯 현재 포지션 상황")
-    try:
-        client = _get_client()
-        pos_info = client.futures_position_information()
-        active = [p for p in pos_info if float(p.get("positionAmt", 0)) != 0]
         
-        if not active:
-            st.info("현재 진입된 포지션이 없습니다. (시그널 대기 중)")
-            return
-            
-        for p in active:
-            amt = float(p.get("positionAmt", 0))
-            pnl = float(p.get("unrealizedProfit", 0))
-            roe = pnl / float(p.get("isolatedWallet", 1)) * 100
-            
-            with st.container():
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("심볼/방향", f"{p['symbol']} ({'LONG' if amt > 0 else 'SHORT'})")
-                c2.metric("수량", f"{abs(amt):g}")
-                c3.metric("진입/현재가", f"{float(p['entryPrice']):,.2f}", delta=f"{float(p['markPrice']):,.2f}")
-                c4.metric("수익률(ROE)", f"{roe:.2f}%", delta=f"{pnl:.2f} USDT")
-                st.divider()
-    except Exception as e: st.error(f"포지션 로드 오류: {e}")
+        st.dataframe(df_view, use_container_width=True)
+    except Exception as e: st.error(f"거래 로드 실패: {e}")
 
-def _render_market_intel(watchlist):
-    st.subheader("🌐 시장 인텔리전스 보고서")
-    try:
-        import requests
-        r = requests.get("https://api.alternative.me/fng/", timeout=3).json()
-        f_val, f_cls = r["data"][0]["value"], r["data"][0]["value_classification"]
-        st.markdown(f"#### 🎭 공포 & 탐욕 지수: **{f_val} ({f_cls})**")
-        st.progress(int(f_val)/100)
-    except: pass
-    
-    st.divider()
-    st.markdown("#### 🔍 실시간 감시 종목 리스트")
-    cols = st.columns(4)
-    for i, s in enumerate(watchlist):
-        cols[i % 4].write(f"- {s} ({_coin_name(s)})")
-
-def _render_performance_report():
+def _render_performance_report(params):
     st.subheader("🤖 봇 자율 전략 분석 및 최적화 보고")
+    st.markdown(f"봇이 백그라운드에서 스스로 분석하고 갱신한 최신 전략 성과 리포트입니다.")
+    
+    # 지능형 안내 박스 (캡처본 재현)
+    st.info(f"💡 현재 봇은 {params.trading_interval} 주기를 최적으로 판단하여 자율 매매 중입니다.")
+    
     try:
-        metrics, trades = load_report_snapshot(30)
-        if metrics:
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("총 예상 수익", f"{metrics['total_pnl']:.2f}%")
-            m2.metric("종합 승률", f"{metrics['win_rate']:.1f}%")
-            m3.metric("최대 낙폭", f"{metrics['max_drawdown']:.2f}%")
-            m4.metric("평균 보유시간", format_duration(metrics.get('avg_hold_duration', 0)))
+        # 멀티 기간 리포트 구현 (7, 14, 30일)
+        periods = [7, 14, 30]
+        rows = []
+        last_trades = None
+        
+        for p in periods:
+            m, t = load_report_snapshot(p)
+            if m:
+                rows.append({
+                    "기간": f"최근 {p}일 성과",
+                    "예상 수익": f"{m['total_pnl']:.2f}%",
+                    "거래 횟수": f"{m['total_trades']}회",
+                    "종합 승률": f"{m['win_rate']:.1f}%",
+                    "평균 보유": f"{m.get('avg_hold_duration', 0):.1f}분",
+                    "최대 리스크": f"{m['max_drawdown']:.2f}%"
+                })
+                if p == 30: last_trades = t
+        
+        if rows:
+            # 상단 요약 메트릭 (14일 기준 캡처본 재현)
+            m14, _ = load_report_snapshot(14)
+            if m14:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("최근 14일 예상 수익", f"{m14['total_pnl']:.2f}%")
+                c2.metric("시뮬레이션 횟수", f"{m14['total_trades']}회")
+                c3.metric("종합 승률", f"{m14['win_rate']:.1f}%")
             
-            st.markdown("#### 전체 거래 내역 (진입/청산/포지션)")
-            df_view = trades.copy()
-            df_view["보유시간"] = (df_view["exit_time"] - df_view["entry_time"]).apply(format_duration)
-            df_view["레버리지"] = df_view.get("leverage", 1).apply(lambda x: f"{int(x)}x")
-            df_view["진입시간"] = pd.to_datetime(df_view["entry_time"], unit='ms', utc=True).dt.strftime('%m-%d %H:%M')
-            df_view["청산시간"] = pd.to_datetime(df_view["exit_time"], unit='ms', utc=True).dt.strftime('%m-%d %H:%M')
+            st.divider()
+            st.markdown("#### 기간별 전략 성과 비교")
+            st.table(pd.DataFrame(rows))
             
-            # 캡처본과 동일한 컬럼 명칭 및 순서
-            df_view.rename(columns={
-                "symbol": "심볼", "side": "방향", "entry_p": "entry_p", 
-                "exit_p": "exit_p", "pnl_pct": "수익률(%)", "reason": "사유"
-            }, inplace=True)
-            
-            cols_order = ["심볼", "방향", "레버리지", "진입시간", "청산시간", "보유시간", "entry_p", "exit_p", "수익률(%)", "사유"]
-            st.dataframe(df_view[cols_order].sort_values("진입시간", ascending=False), use_container_width=True)
-            
-            st.markdown("#### 누적 수익 곡선")
-            st.line_chart(trades.sort_values("exit_time")["pnl_pct"].cumsum())
-    except Exception as e: st.error(f"성과 리포트 로드 오류: {e}")
+            if last_trades is not None and not last_trades.empty:
+                st.markdown("#### 자율 최적화 모델 수익률 추이")
+                st.line_chart(last_trades.sort_values("exit_time")["pnl_pct"].cumsum())
+                
+                st.markdown("#### 상세 매매 기록 (레버리지 반영)")
+                df_trades = last_trades.copy()
+                df_trades["보유시간"] = (df_trades["exit_time"] - df_trades["entry_time"]).apply(lambda x: f"{x:.1f}분")
+                df_trades["진입시간"] = pd.to_datetime(df_trades["entry_time"], unit='ms', utc=True).dt.strftime('%m-%d %H:%M')
+                df_trades["수익률(%)"] = df_trades["pnl_pct"].apply(lambda x: f"{x:.2f}%")
+                df_trades["레버리지"] = df_trades.get("leverage", 1).apply(lambda x: f"{int(x)}x")
+                
+                cols = ["symbol", "side", "레버리지", "진입시간", "보유시간", "entry_p", "exit_p", "수익률(%)", "reason"]
+                st.dataframe(df_trades[cols].sort_values("진입시간", ascending=False), use_container_width=True)
+                
+        else: st.warning("성과 데이터를 분석 중입니다...")
+    except Exception as e: st.error(f"리포트 구성 실패: {e}")
 
 def main():
-    st.set_page_config(page_title="RpmDoctor Bot Briefing Center", layout="wide")
+    st.set_page_config(page_title="RpmDoctor Intelligence", layout="wide")
+    settings = get_settings()
+    params = load_params(settings)
+    
+    # 상단 KRW 표시 및 타이틀
+    acc_info = {}
+    try: acc_info = _get_client().futures_account()
+    except: pass
+    
+    _render_header_krw(acc_info)
     
     st.title("🤖 봇 자율 전략 분석 및 최적화 보고")
-    st.caption("RpmDoctor™ 자율 전략 최적화 엔진이 탑재된 실시간 매매 모니터링 시스템")
     
-    settings = get_settings()
-    
-    # 사이드바
-    with st.sidebar:
-        st.header("⚙️ 봇 상태 센터")
-        st.write(f"🟢 **현재 상태**: {'작동 중' if settings.trading_enable else '대기 중'}")
-        st.write(f"🏦 **모드**: {'테스트넷' if settings.use_testnet else '메인넷'}")
-        st.write(f"🧪 **가상매매**: {'ON' if settings.trading_dry_run else 'OFF'}")
-        st.divider()
-        if st.button("새로고침 및 캐시 삭제"): st.cache_data.clear()
-
-    # 계좌 정보 요약 (Metric 상단 배치)
-    try:
-        acc = _get_client().futures_account()
+    # 상단 계좌 메트릭
+    if acc_info:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("지갑 잔고", f"{float(acc.get('totalWalletBalance', 0)):,.2f} USDT")
-        c2.metric("마진 잔고", f"{float(acc.get('totalMarginBalance', 0)):,.2f} USDT")
-        c3.metric("미실현 손익", f"{float(acc.get('totalUnrealizedProfit', 0)):,.2f} USDT")
-        c4.metric("매매 가능", "YES" if acc.get("canTrade") else "NO")
-    except: pass
+        c1.metric("지갑 잔고", f"{float(acc_info.get('totalWalletBalance', 0)):,.2f} USDT")
+        c2.metric("마진 잔고", f"{float(acc_info.get('totalMarginBalance', 0)):,.2f} USDT")
+        c3.metric("미실현 손익", f"{float(acc_info.get('totalUnrealizedProfit', 0)):,.2f} USDT")
+        c4.metric("매매 가능", "YES" if acc_info.get("canTrade") else "NO")
 
     st.divider()
 
-    # 관심 종목 로직
+    # 관심 종목
     watchlist = []
     try:
         if settings.watchlist_mode == "auto":
-            wl_items = build_auto_watchlist(
-                _get_client(),
-                size=settings.watchlist_size,
-                min_quote_volume_usdt=settings.watchlist_min_quote_usdt,
-                max_volatility_pct_24h=settings.watchlist_max_vol_pct_24h,
-                exclude_symbols=settings.watchlist_exclude_symbols,
-                exclude_keywords=settings.watchlist_exclude_keywords
-            )
+            wl_items = build_auto_watchlist(_get_client(), size=settings.watchlist_size)
             watchlist = [i.symbol for i in wl_items]
-        else:
-            watchlist = list(settings.watchlist_symbols)
+        else: watchlist = list(settings.watchlist_symbols)
     except: watchlist = list(settings.watchlist_symbols)
 
-    # 7개 탭 구성 (원본 복원)
+    # 7개 탭 구성
     tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "시장 인텔리전스", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
     
     with tabs[0]: _render_trade_summary(settings)
-    with tabs[1]: _render_positions()
+    with tabs[1]:
+        st.subheader("🎯 현재 라이브 포지션")
+        try:
+            pos = [p for p in _get_client().futures_position_information() if float(p.get("positionAmt", 0)) != 0]
+            if not pos: st.info("현재 오픈된 포지션이 없습니다.")
+            for p in pos:
+                st.write(f"**{p['symbol']}** | ROI: {float(p['unrealizedProfit']):.2f} USDT")
+        except: pass
     with tabs[2]:
-        st.subheader("📈 실시간 모니터링 시그널")
+        st.subheader("📈 실시간 모니터링")
         st.info("전략 엔진이 감시 종목들의 실시간 시그널을 분석 중입니다.")
-    with tabs[3]: _render_market_intel(watchlist)
-    with tabs[4]: _render_performance_report()
+    with tabs[3]:
+        st.subheader("🌐 시장 인텔리전스")
+        cols = st.columns(4)
+        for i, s in enumerate(watchlist): cols[i % 4].write(f"- {s} ({_coin_name(s)})")
+    with tabs[4]: _render_performance_report(params)
     with tabs[5]:
-        st.subheader("🏥 시스템 상태 및 로그")
+        st.subheader("🏥 시스템 로그")
         log_path = Path("logs") / "app.log"
         if log_path.exists():
             st.code("\n".join(log_path.read_text(encoding="utf-8").splitlines()[-50:][::-1]))
     with tabs[6]:
-        st.subheader("📏 진입/청산 조건 (Rules)")
-        params = load_params(settings)
+        st.subheader("📏 진입/청산 조건")
         st.json(vars(params))
 
 if __name__ == "__main__":
