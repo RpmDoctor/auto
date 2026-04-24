@@ -38,12 +38,12 @@ class StrategyOptimizer:
         for interval in self.intervals:
             logger.info(f"타임프레임 스캔 중: {interval}")
             
-            # 데이터 수집 (최근 14일 기준 고정)
+            # 데이터 수집 (최근 30일 기준 고정으로 확장)
             symbol_data = {}
-            for symbol in watchlist[:10]: # 속도를 위해 상위 10개 종목만 샘플링
+            for symbol in watchlist[:10]:
                 try:
                     df = fetch_historical_klines_paginated(
-                        self.client, symbol=symbol, interval=interval, days=14
+                        self.client, symbol=symbol, interval=interval, days=30
                     )
                     if not df.empty:
                         symbol_data[symbol] = df
@@ -93,7 +93,7 @@ class StrategyOptimizer:
             new_params.trading_interval = best_interval
             
             save_params(new_params)
-            save_report_snapshot(14, best_metrics, best_trades) # 14일 기준 스냅샷 강제 갱신
+            save_report_snapshot(30, best_metrics, best_trades) # 30일 기준 스냅샷 강제 갱신
             
             return {
                 "success": True,
