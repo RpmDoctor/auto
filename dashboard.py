@@ -664,11 +664,11 @@ def get_cached_report_snapshot(days: int):
     return load_report_snapshot(days)
 
 def main() -> None:
-    st.set_page_config(page_title="RpmDoctor Bot Briefing Center", layout="wide")
+    st.set_page_config(page_title="RpmDoctor Intelligence", layout="wide")
     
     # 상단 헤더
-    st.title("🛡️ Bot Briefing Center")
-    st.caption("자율 전략 최적화 엔진이 탑재된 실시간 매매 모니터링 시스템")
+    st.title("🤖 봇 자율 전략 분석 및 최적화 보고")
+    st.caption("RpmDoctor의 자율 전략 최적화 엔진이 탑재된 실시간 매매 모니터링 시스템")
     
     # 자율 최적화 엔진 시작 (대시보드에서도 백그라운드 구동)
     if "optimizer_started" not in st.session_state:
@@ -692,7 +692,6 @@ def main() -> None:
             st.session_state.optimizer_started = True
     
     settings = get_settings()
-    st.title("자동매매 대시보드 (바이낸스 선물 테스트넷)")
 
     # 기본: 1분마다 자동 새로고침 (추가 패키지 없이 동작)
     components.html(
