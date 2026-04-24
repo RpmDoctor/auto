@@ -231,6 +231,20 @@ def _get_live_signals(symbols: list[str]) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
+@st.cache_data(ttl=3600)
+def _get_fear_and_greed():
+    import requests
+    try:
+        r = requests.get("https://api.alternative.me/fng/", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            val = int(data["data"][0]["value"])
+            classification = data["data"][0]["value_classification"]
+            return val, classification
+    except Exception:
+        pass
+    return 50, "Neutral"
+
 @st.cache_data(ttl=300)
 def _get_market_intel_data(symbols: list[str]):
     if not symbols: return None
@@ -239,95 +253,100 @@ def _get_market_intel_data(symbols: list[str]):
     params = load_params(settings)
     
     results = []
-    for s in symbols[:15]: # 성능을 위해 상위 15개만 분석
+    for s in symbols[:15]: 
         try:
-            df = fetch_futures_klines(client, symbol=s, interval="1h", limit=50)
-            if df.empty: continue
+            # 단기(1h)와 중기(4h) 데이터를 동시에 가져옴
+            df_1h = fetch_futures_klines(client, symbol=s, interval="1h", limit=100)
+            df_4h = fetch_futures_klines(client, symbol=s, interval="4h", limit=100)
             
-            close = df["close"].astype(float)
-            ema_fast = calculate_ema(close, params.ema_fast).iloc[-1]
-            ema_slow = calculate_ema(close, params.ema_slow).iloc[-1]
-            rsi = calculate_rsi(close, params.rsi_period).iloc[-1]
-            atr = calculate_atr(df, 14).iloc[-1]
-            curr_price = close.iloc[-1]
+            if df_1h.empty or df_4h.empty: continue
             
-            # 변동성 비율 (가격 대비 ATR)
-            volatility_ratio = (atr / curr_price) * 100
+            # 1h 분석
+            c_1h = df_1h["close"].astype(float)
+            ema_fast_1h = calculate_ema(c_1h, params.ema_fast).iloc[-1]
+            ema_slow_1h = calculate_ema(c_1h, params.ema_slow).iloc[-1]
+            rsi_1h = calculate_rsi(c_1h, params.rsi_period).iloc[-1]
+            
+            # 4h 분석 (장기 추세)
+            c_4h = df_4h["close"].astype(float)
+            ema_fast_4h = calculate_ema(c_4h, params.ema_fast).iloc[-1]
+            ema_slow_4h = calculate_ema(c_4h, params.ema_slow).iloc[-1]
+            
+            atr = calculate_atr(df_1h, 14).iloc[-1]
+            curr_price = c_1h.iloc[-1]
             
             results.append({
                 "symbol": s,
-                "trend": "BULL" if ema_fast > ema_slow else "BEAR",
-                "rsi": rsi,
-                "vol_ratio": volatility_ratio,
-                "change_pct": ((curr_price - close.iloc[0]) / close.iloc[0]) * 100
+                "trend_1h": "BULL" if ema_fast_1h > ema_slow_1h else "BEAR",
+                "trend_4h": "BULL" if ema_fast_4h > ema_slow_4h else "BEAR",
+                "rsi": rsi_1h,
+                "vol_ratio": (atr / curr_price) * 100,
+                "change_pct": ((curr_price - c_1h.iloc[0]) / c_1h.iloc[0]) * 100
             })
         except Exception: continue
     return results
 
 def _render_market_intelligence(symbols: list[str]) -> None:
-    st.subheader("🌐 실시간 시장 인텔리전스 보고서")
-    st.caption("현재 시장의 전체적인 흐름과 심리를 분석한 데이터입니다. (매 5분 자동 갱신)")
-
-    with st.spinner("시장 상황 분석 중..."):
+    st.subheader("🌐 미래 지향적 시장 전망 보고서")
+    
+    fng_val, fng_class = _get_fear_and_greed()
+    
+    # 상단 요약 카드 (공포지수 포함)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Fear & Greed Index", f"{fng_val}", fng_class)
+    
+    with st.spinner("다각도 시장 분석 중..."):
         data = _get_market_intel_data(symbols)
-        
+    
     if not data:
-        st.warning("분석할 시장 데이터가 부족합니다.")
+        st.warning("분석 데이터 로딩 중...")
         return
-
+    
     df = pd.DataFrame(data)
     
-    # 1. 시장 심리 게이지
-    bull_count = len(df[df["trend"] == "BULL"])
-    bear_count = len(df) - bull_count
-    bull_ratio = (bull_count / len(df)) * 100
-    
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        sentiment = "탐욕(Greed)" if bull_ratio > 60 else "공포(Fear)" if bull_ratio < 40 else "중립(Neutral)"
-        st.metric("시장 심리 (Sentiment)", sentiment, f"{bull_ratio:.1f}% Bull")
-        st.progress(bull_ratio / 100)
-    
+    bull_1h = len(df[df["trend_1h"] == "BULL"])
+    bull_4h = len(df[df["trend_4h"] == "BULL"])
+    bull_ratio_1h = (bull_1h / len(df)) * 100
+    bull_ratio_4h = (bull_4h / len(df)) * 100
+
     with c2:
-        avg_vol = df["vol_ratio"].mean()
-        vol_status = "폭발적" if avg_vol > 2.5 else "역동적" if avg_vol > 1.5 else "안정적"
-        st.metric("시장 변동성 (Volatility)", vol_status, f"{avg_vol:.2f}%")
-        
+        st.metric("단기 심리 (1h)", f"{bull_ratio_1h:.0f}% Bull", "상승세" if bull_ratio_1h > 50 else "하락세")
     with c3:
-        avg_rsi = df["rsi"].mean()
-        rsi_status = "과매수권" if avg_rsi > 65 else "과매도권" if avg_rsi < 35 else "적정가"
-        st.metric("평균 강도 (RSI)", rsi_status, f"{avg_rsi:.1f}")
+        st.metric("중기 추세 (4h)", f"{bull_ratio_4h:.0f}% Bull", "안정적" if bull_ratio_4h > 50 else "불안정")
+    with c4:
+        avg_vol = df["vol_ratio"].mean()
+        st.metric("변동성 (ATR)", f"{avg_vol:.2f}%", "폭발적" if avg_vol > 2 else "안정")
 
     st.divider()
     
-    # 2. 섹터 요약 및 전략 어드바이스
-    col_l, col_r = st.columns([2, 1])
-    with col_l:
-        st.markdown("### 🚀 상승/하락 TOP 3 (Watchlist 기준)")
-        sorted_df = df.sort_values("change_pct", ascending=False)
-        top_3 = sorted_df.head(3)
-        bot_3 = sorted_df.tail(3).iloc[::-1]
-        
-        t1, t2 = st.columns(2)
-        with t1:
-            st.success("**최근 상승세 강한 종목**")
-            for _, row in top_3.iterrows():
-                st.write(f"- **{row['symbol']}**: +{row['change_pct']:.2f}%")
-        with t2:
-            st.error("**최근 하락세 강한 종목**")
-            for _, row in bot_3.iterrows():
-                st.write(f"- **{row['symbol']}**: {row['change_pct']:.2f}%")
+    # 지능형 코멘트 (미래 가이드)
+    st.markdown("### 🕵️ 봇의 인공지능 분석 가이드")
+    
+    # 추세 정렬 분석
+    if bull_ratio_1h > 60 and bull_ratio_4h > 60:
+        st.success("✅ **추세 완전 정렬 (Bull)**: 단기/중기가 모두 상승세입니다. 미래 전망이 매우 밝으며, 눌림목마다 매수(Long)가 유리한 구간입니다.")
+    elif bull_ratio_1h < 40 and bull_ratio_4h < 40:
+        st.error("🚨 **강한 하락 압력 (Bear)**: 단기/중기가 모두 꺾였습니다. 신규 진입에 매우 신중해야 하며, 당분간 하락세가 지속될 가능성이 높습니다.")
+    elif bull_ratio_1h > 60 and bull_ratio_4h < 40:
+        st.warning("⚠️ **기술적 반등 구간**: 중기 추세는 하락이나 단기적으로만 오르고 있습니다. '가짜 반등(Dead Cat)'일 확률이 있으니 추격 매수는 금물입니다.")
+    elif bull_ratio_1h < 40 and bull_ratio_4h > 60:
+        st.info("📉 **건전한 조정 구간**: 대세는 상승이나 단기적으로 과열을 식히는 중입니다. 주요 지지선에서 매수 기회를 엿볼 수 있는 미래 지향적 타점입니다.")
+    else:
+        st.write("⚖️ **방향성 탐색 중**: 현재 시장은 뚜렷한 방향 없이 힘을 모으는 중입니다. 큰 베팅보다는 짧은 매매로 대응하세요.")
 
+    st.divider()
+    # TOP 3 요약
+    col_l, col_r = st.columns(2)
+    with col_l:
+        st.markdown("📈 **주도주 (Leading Symbols)**")
+        sorted_df = df.sort_values("change_pct", ascending=False)
+        for _, row in sorted_df.head(3).iterrows():
+            st.write(f"- {row['symbol']}: +{row['change_pct']:.2f}% (1h: {row['trend_1h']})")
     with col_r:
-        st.markdown("### 💡 오늘의 매매 전략 조언")
-        if bull_ratio > 70 and avg_vol > 2.0:
-            st.info("🔥 **불장 추세 추종**: 강력한 상승 흐름입니다. 롱(Long) 위주의 추세 추종 전략이 유효합니다.")
-        elif bear_count > bull_count and avg_vol > 2.0:
-            st.warning("⚠️ **패닉 셀 주의**: 시장이 하락 압력을 강하게 받고 있습니다. 짧은 숏(Short) 또는 관망을 추천합니다.")
-        elif avg_vol < 1.0:
-            st.write("😴 **횡보장 대응**: 변동성이 낮습니다. 박스권 매매를 하거나 봇의 진입 장벽을 높여 실수를 줄이세요.")
-        else:
-            st.write("⚖️ **중립 장세**: 확실한 방향성이 나올 때까지 종목별로 분산 대응하는 것이 유리합니다.")
+        st.markdown("📉 **낙폭주 (Lagging Symbols)**")
+        for _, row in sorted_df.tail(3).iloc[::-1].iterrows():
+            st.write(f"- {row['symbol']}: {row['change_pct']:.2f}% (1h: {row['trend_1h']})")
 
 def _render_health() -> None:
     st.subheader("상태 점검")
