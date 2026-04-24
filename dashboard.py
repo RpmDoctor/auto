@@ -352,10 +352,11 @@ def _render_trade_summary(symbol: str | None, limit: int) -> None:
         
         summary = summarize_futures_trades(df)
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("총 거래", f"{summary['total_count']}회")
-        c2.metric("승률", f"{summary['win_rate']:.1f}%")
-        c3.metric("총 실현익(USDT)", f"{summary['total_pnl']:.2f}")
-        c4.metric("수수료(USDT)", f"{summary['total_commission']:.2f}")
+        c1.metric("총 거래", f"{summary.trades_count}회")
+        win_rate_val = (summary.win_rate * 100) if summary.win_rate is not None else 0
+        c2.metric("승률", f"{win_rate_val:.1f}%")
+        c3.metric("총 실현익(USDT)", f"{summary.realized_pnl:.2f}")
+        c4.metric("수수료(USDT)", f"{summary.commission_usdt:.2f}")
 
         st.dataframe(df.sort_values("time", ascending=False), width="stretch")
     except Exception as e:
