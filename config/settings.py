@@ -68,6 +68,7 @@ class Settings:
     trading_use_exchange_filters: bool
     risk_atr_multiplier_sl: float
     risk_atr_multiplier_tp: float
+    optimizer_enable: bool
 
 
 def _parse_bool(value: str | None, default: bool = True) -> bool:
@@ -160,6 +161,7 @@ def get_settings() -> Settings:
     trading_use_exchange_filters = _parse_bool(os.getenv("TRADING_USE_EXCHANGE_FILTERS"), default=True)
     risk_atr_multiplier_sl = _parse_float(os.getenv("RISK_ATR_MULTIPLIER_SL"), default=1.5)
     risk_atr_multiplier_tp = _parse_float(os.getenv("RISK_ATR_MULTIPLIER_TP"), default=3.0)
+    optimizer_enable = _parse_bool(os.getenv("OPTIMIZER_ENABLE"), default=True)
 
     placeholder_values = {"YOUR_API_KEY_HERE", "YOUR_API_SECRET_HERE"}
     if (
@@ -282,4 +284,5 @@ def get_settings() -> Settings:
         trading_use_exchange_filters=trading_use_exchange_filters,
         risk_atr_multiplier_sl=risk_atr_multiplier_sl,
         risk_atr_multiplier_tp=risk_atr_multiplier_tp,
+        optimizer_enable=optimizer_enable,
     )
