@@ -83,37 +83,41 @@ class PortfolioBacktester:
         # 루프 시작점
         start_idx = int(max(lookback, self.params.rsi_period, self.params.ema_slow, 30))
         
-        # 최적화된 루프
+        # Strictly Sequential Loop: 시그널은 i-1까지의 데이터로, 진입은 i의 시가로.
         for i in range(start_idx, len(df)):
-            cur_p = close_series.iloc[i]
+            cur_open = df["open"].iloc[i]
             cur_time = df["open_time"].iloc[i]
-
+            
+            # i-1 시점의 데이터 (진입 판단용)
+            idx_prev = i - 1
+            
             if not in_pos:
-                # 진입 조건 체크 (Pre-calculated values 사용)
-                c_rsi = rsi.iloc[i]
-                c_ema_f = ema_fast.iloc[i]
-                c_ema_s = ema_slow.iloc[i]
-                c_macd = macd.iloc[i]
-                c_macd_s = macd_signal.iloc[i]
+                # i-1 봉이 마감된 시점의 지표들
+                p_rsi = rsi.iloc[idx_prev]
+                p_ema_f = ema_fast.iloc[idx_prev]
+                p_ema_s = ema_slow.iloc[idx_prev]
+                p_macd = macd.iloc[idx_prev]
+                p_macd_s = macd_signal.iloc[idx_prev]
                 
-                c_open = df["open"].iloc[i]
-                c_high = df["high"].iloc[i]
-                c_low = df["low"].iloc[i]
-                c_vol = vol_series.iloc[i]
+                p_close = close_series.iloc[idx_prev]
+                p_open = df["open"].iloc[idx_prev]
+                p_high = df["high"].iloc[idx_prev]
+                p_low = df["low"].iloc[idx_prev]
+                p_vol = vol_series.iloc[idx_prev]
                 
-                p_high = prev_high.iloc[i]
-                p_low = prev_low.iloc[i]
-                p_vol_avg = avg_vol.iloc[i]
+                p_db_high = prev_high.iloc[idx_prev]
+                p_db_low = prev_low.iloc[idx_prev]
+                p_vol_avg = avg_vol.iloc[idx_prev]
                 
-                body_pct = abs(cur_p - c_open) / c_open * 100.0 if c_open > 0 else 0
-                vol_ok = c_vol > (p_vol_avg * self.params.volume_mult) if p_vol_avg > 0 else False
+                body_pct = abs(p_close - p_open) / p_open * 100.0 if p_open > 0 else 0
+                vol_ok = p_vol > (p_vol_avg * self.params.volume_mult) if p_vol_avg > 0 else False
                 
-                # Signal Logic (breakout_volume_direction_signal의 단순화 버전)
-                is_bull = cur_p > c_open
-                is_bear = cur_p < c_open
+                is_bull = p_close > p_open
+                is_bear = p_close < p_open
                 
-                long_cond = (c_high > p_high) and vol_ok and is_bull and (body_pct >= self.params.min_body_pct) and (c_ema_f > c_ema_s) and (c_rsi < self.params.rsi_high) and (c_macd > c_macd_s)
-                short_cond = (c_low < p_low) and vol_ok and is_bear and (body_pct >= self.params.min_body_pct) and (c_ema_f < c_ema_s) and (c_rsi > self.params.rsi_low) and (c_macd < c_macd_s)
+                # 시그널 판단 (i-1 봉 마감 기준)
+                long_cond = (p_high > p_db_high) and vol_ok and is_bull and (body_pct >= self.params.min_body_pct) and (p_ema_f > p_ema_s) and (p_rsi < self.params.rsi_high) and (p_macd > p_macd_s)
+                short_cond = (p_low < p_db_low) and vol_ok and is_bear and (body_pct >= self.params.min_body_pct) and (p_ema_f < p_ema_s) and (p_rsi > self.params.rsi_low) and (p_macd < p_macd_s)
 
                 if long_cond:
                     in_pos, side = True, "LONG"
@@ -121,8 +125,12 @@ class PortfolioBacktester:
                     in_pos, side = True, "SHORT"
 
                 if in_pos:
-                    entry_p, high_water, entry_time = cur_p, cur_p, cur_time
-                    c_atr = atr.iloc[i]
+                    # 진입은 i 봉의 시가(Open)에 수행 (미래 데이터 참조 0%)
+                    entry_p = cur_open
+                    high_water = entry_p
+                    entry_time = cur_time
+                    
+                    c_atr = atr.iloc[idx_prev]
                     if side == "LONG":
                         sl_p = entry_p - (c_atr * self.params.atr_multiplier_sl)
                         tp_p = entry_p + (c_atr * self.params.atr_multiplier_tp)
@@ -146,10 +154,19 @@ class PortfolioBacktester:
                     if exit_reason: pnl_pct = (entry_p - cur_p) / entry_p - total_cost_rate
 
                 if exit_reason:
+                    # 레버리지가 반영된 수익률 계산
+                    leveraged_pnl = pnl_pct * self.params.leverage * 100
+                    
                     trades.append({
-                        "symbol": symbol, "entry_time": entry_time, "exit_time": cur_time,
-                        "side": side, "entry_p": entry_p, "exit_p": cur_p,
-                        "pnl_pct": pnl_pct * 100, "reason": exit_reason
+                        "symbol": symbol,
+                        "entry_time": entry_time,
+                        "exit_time": cur_time,
+                        "side": side,
+                        "entry_p": entry_p,
+                        "exit_p": cur_p,
+                        "pnl_pct": leveraged_pnl,
+                        "leverage": self.params.leverage,
+                        "reason": exit_reason
                     })
                     in_pos = False
         return trades

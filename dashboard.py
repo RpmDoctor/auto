@@ -796,10 +796,265 @@ def main() -> None:
         else:
             st.info("관심 종목이 없습니다.")
 
+def _render_forward_test() -> None:
+    st.subheader("🧪 실시간 가상 시뮬레이션 (Forward Test)")
+    st.caption("봇이 실시간 타임라인을 따라가며 가상으로 매매한 내역입니다. (DRY_RUN 전 전용)")
+    
+    import json
+    v_pos_path = Path("data") / "virtual_position.json"
+    history_path = Path("logs") / "trade_history.csv"
+    
+    # 1. 현재 오픈된 가상 포지션
+    if v_pos_path.exists():
+        try:
+            v_pos = json.loads(v_pos_path.read_text(encoding="utf-8"))
+            if v_pos.get("symbol"):
+                st.markdown("### 📡 현재 오픈된 가상 포지션")
+                c1, c2, c3, c4, c5 = st.columns(5)
+                entry = v_pos["entry_price"]
+                mark = v_pos["mark_price"]
+                side = v_pos["side"]
+                
+                # 실시간 수익률 계산
+                if side == "LONG":
+                    pnl_pct = (mark - entry) / entry * 100
+                else:
+                    pnl_pct = (entry - mark) / entry * 100
+                
+                with c1: st.metric("심볼", v_pos["symbol"])
+                with c2: st.metric("방향", side)
+                with c3: st.metric("진입가", f"{entry:,.4f}")
+                with c4: st.metric("현재가", f"{mark:,.4f}")
+                with c5: st.metric("평가손익(%)", f"{pnl_pct:.2f}%", delta=f"{pnl_pct:.2f}%")
+                
+                st.caption(f"최종 업데이트: {v_pos.get('updated_at')}")
+                st.divider()
+            else:
+                st.info("현재 오픈된 가상 포지션이 없습니다. (시그널 대기 중)")
+        except Exception:
+            st.info("가상 포지션 정보를 읽는 중...")
+    
+    # 2. 가상 거래 히스토리
+    if history_path.exists():
+        try:
+            df = pd.read_csv(history_path)
+            if not df.empty:
+                st.markdown("### 📜 실시간 가상 매매 히스토리")
+                # 최근 기록이 위로
+                df_view = df.iloc[::-1].copy()
+                
+                # 메트릭 요약
+                win_trades = len(df[df["roi_pct"] > 0])
+                total_trades = len(df)
+                win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
+                total_pnl = df["roi_pct"].sum()
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("총 가상 거래", f"{total_trades}회")
+                m2.metric("가상 승률", f"{win_rate:.1f}%")
+                m3.metric("총 누적 수익률", f"{total_pnl:.2f}%")
+                
+                # 테이블 표시
+                st.dataframe(df_view, width="stretch", height=400)
+                
+                # 가상 수익률 차트
+                st.markdown("### 📈 실시간 가상 수익 곡선")
+                df["cum_pnl"] = df["roi_pct"].cumsum()
+                st.line_chart(df["cum_pnl"])
+            else:
+                st.write("아직 완료된 가상 거래가 없습니다.")
+        except Exception as e:
+            st.error(f"히스토리 로드 오류: {e}")
+    else:
+        st.info("가상 매매 히스토리가 아직 없습니다. 봇이 첫 거래를 마치면 여기에 표시됩니다.")
+
+def _render_health() -> None:
+    st.subheader("상태 점검")
+    client = _get_client()
+    settings = get_settings()
+    results = run_health_checks(client, settings)
+    
+    # 헬스체크 결과를 카드 형태로 표시
+    cols = st.columns(len(results))
+    for i, r in enumerate(results):
+        with cols[i]:
+            if r.ok:
+                st.success(f"**{r.name}**\n\nOK")
+            else:
+                st.error(f"**{r.name}**\n\nFAIL")
+                st.caption(r.detail)
+
+def _render_logs() -> None:
+    st.subheader("최근 실행 로그")
+    log_path = Path("logs") / "app.log"
+    if log_path.exists():
+        logs = log_path.read_text(encoding="utf-8").splitlines()[-100:]
+        st.code("\n".join(logs[::-1]), language="text")
+    else:
+        st.info("로그 파일이 아직 없습니다.")
+
+def _render_rules() -> None:
+    st.subheader("📏 현재 적용된 매매 전략 규칙")
+    settings = get_settings()
+    params = load_params(settings)
+    
+    st.markdown(f"### 🤖 지능형 자율 엔진 상태: **{'활성화' if settings.optimizer_enable else '비활성화'}**")
+    st.write(f"현재 봇은 **{params.trading_interval}** 주기를 기준으로 **{params.leverage}배** 레버리지를 사용 중입니다.")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 📥 진입 조건 (Entry)")
+        st.write(f"- **거래량 필터**: 평균 대비 **{params.volume_mult}배** 이상 폭발 시")
+        st.write(f"- **캔들 몸통**: 최소 **{params.min_body_pct}%** 이상 장대봉")
+        st.write(f"- **추세 확인**: EMA {params.ema_fast} / {params.ema_slow} 정배열(LONG) 또는 역배열(SHORT)")
+        st.write(f"- **강도 확인**: RSI {params.rsi_low} ~ {params.rsi_high} 범위 내")
+        st.write(f"- **모멘텀**: MACD ({params.macd_fast}, {params.macd_slow}, {params.macd_signal}) 골든/데드크로스")
+
+    with c2:
+        st.markdown("#### 📤 청산 조건 (Exit)")
+        st.write(f"- **손절(SL)**: 진입가 대비 ATR의 **{params.atr_multiplier_sl}배** 하락 시")
+        st.write(f"- **익절(TP)**: 진입가 대비 ATR의 **{params.atr_multiplier_tp}배** 상승 시")
+        st.write(f"- **트레일링 스탑**: 고점 대비 **{params.trailing_stop_pct}%** 하락 시 수익 보존")
+        st.write(f"- **최대 보유**: 진입 후 **{params.max_hold_seconds // 3600}시간** 경과 시 강제 종료")
+    
+    st.divider()
+    st.caption("※ 위 규칙들은 봇이 24시간마다 시장 데이터를 학습하여 스스로 최적의 값으로 갱신합니다.")
+
+
+def main() -> None:
+    st.set_page_config(page_title="RpmDoctor Bot Briefing Center", layout="wide")
+    
+    # 상단 헤더
+    st.title("🛡️ Bot Briefing Center")
+    st.caption("자율 전략 최적화 엔진이 탑재된 실시간 매매 모니터링 시스템")
+    
+    # 자율 최적화 엔진 시작 (대시보드에서도 백그라운드 구동)
+    if "optimizer_started" not in st.session_state:
+        settings = get_settings()
+        client = _get_client()
+        if client:
+            def _run_optimizer_in_bg():
+                optimizer = StrategyOptimizer(client, settings)
+                while True:
+                    try:
+                        wl = build_auto_watchlist(client, size=20)
+                        symbols = [item.symbol for item in wl]
+                        if symbols:
+                            optimizer.run_autonomous_optimization(symbols)
+                    except Exception:
+                        pass
+                    time.sleep(86400) # 24시간
+            
+            thread = threading.Thread(target=_run_optimizer_in_bg, daemon=True)
+            thread.start()
+            st.session_state.optimizer_started = True
+    
+    # 기본: 1분마다 자동 새로고침 (추가 패키지 없이 동작)
+    components.html(
+        "<script>setTimeout(() => window.location.reload(), 60000);</script>",
+        height=0,
+    )
+
+    settings = get_settings()
+    # 대시보드가 "최신 코드"로 떠 있는지 확인용(캐시/재시작 이슈 진단)
+    try:
+        mtime = datetime.fromtimestamp(Path(__file__).stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        st.caption(f"대시보드 코드 업데이트 시간: {mtime}")
+    except Exception:
+        pass
+
+    with st.sidebar:
+        st.header("설정")
+        st.caption("`.env` 기반 (대시보드는 주문 실행하지 않음)")
+        st.subheader("관심 코인")
+        if settings.watchlist_mode == "auto":
+            st.caption(
+                f"자동 선정: 거래대금(24h)↑ / 변동률(24h)≤{settings.watchlist_max_vol_pct_24h:g}% / 밈·잡코인 제외"
+            )
+            watchlist = _get_auto_watchlist_symbols()
+        else:
+            st.caption("수동 설정(WATCHLIST_SYMBOLS)")
+            watchlist = list(getattr(settings, "watchlist_symbols", ()))
+
+        if watchlist:
+            for s in watchlist:
+                st.write(f"- {s} ({_coin_name(s)})")
+            
+            st.divider()
+            if st.button("실시간 시그널 새로고침"):
+                st.cache_data.clear()
+        else:
+            st.info("관심 코인 목록이 비어있습니다.")
+
+    # UI에서 조회 심볼/조회 개수를 제거했습니다.
+    symbol = None
+    trades_limit = int(settings.dashboard_trades_limit)
+
+    # ===== 맨 위: 계좌 요약 =====
+    st.subheader("계좌 요약")
+    with st.expander("용어 설명(지갑/마진/미실현)", expanded=False):
+        st.write(
+            "- **단위**: 대부분 `USDT(테더)` 입니다. (달러에 1:1로 붙도록 설계된 코인)\n"
+            "- `지갑 잔고(Wallet)` : 선물 계정의 기본 잔고(대체로 미실현 손익 제외)\n"
+            "- `마진 잔고(Margin)` : 포지션 평가까지 반영된 현재 증거금(대체로 Wallet + 미실현 손익)\n"
+            "- `미실현 손익` : 진입은 했지만 아직 청산 전인 상태의 평가손익"
+        )
+        st.write("- **마진모드 권장**: 격리(ISOLATED). (이 프로젝트는 주문 전에 격리로 강제 설정)")
+
+    try:
+        acc = _get_account_summary()
+        c1, c2, c3, c4 = st.columns(4)
+        wallet = acc.get("totalWalletBalance")
+        margin = acc.get("totalMarginBalance")
+        unreal = acc.get("totalUnrealizedProfit")
+        with c1:
+            st.metric("지갑 잔고(USDT)", _fmt(wallet, decimals=1))
+            hint = _fmt_krw_from_usdt(wallet, settings.usdt_krw_rate)
+            if hint:
+                st.caption(hint)
+        with c2:
+            st.metric("마진 잔고(USDT)", _fmt(margin, decimals=1))
+            hint = _fmt_krw_from_usdt(margin, settings.usdt_krw_rate)
+            if hint:
+                st.caption(hint)
+        with c3:
+            st.metric("미실현 손익(USDT)", _fmt(unreal, decimals=1))
+            hint = _fmt_krw_from_usdt(unreal, settings.usdt_krw_rate)
+            if hint:
+                st.caption(hint)
+        with c4:
+            st.metric("거래 가능", "가능" if acc.get("canTrade") else "불가")
+    except Exception as e:
+        st.error(str(e))
+        st.stop()
+
+    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "시장 인텔리전스", "실시간 시뮬레이션", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
+
+    with tabs[0]:
+        _render_trade_summary(symbol=symbol, limit=trades_limit)
+
+    with tabs[1]:
+        _render_positions(symbol=symbol)
+
+    with tabs[2]:
+        st.subheader("관심 종목 실시간 시그널 상태")
+        st.caption("봇이 진입 기회를 엿보고 있는 종목들의 현재 지표 상태입니다.")
+        if watchlist:
+            sig_df = _get_live_signals(watchlist)
+            if not sig_df.empty:
+                st.dataframe(sig_df, width="stretch", height=400)
+            else:
+                st.info("시그널 데이터를 가져오지 못했습니다.")
+        else:
+            st.info("관심 종목이 없습니다.")
+
     with tabs[3]:
         _render_market_intelligence(watchlist)
 
     with tabs[4]:
+        _render_forward_test()
+
+    with tabs[5]:
         st.subheader("🤖 봇 자율 전략 분석 및 최적화 보고")
         st.caption("봇이 백그라운드에서 스스로 분석하고 갱신한 최신 전략 성과 리포트입니다.")
         
@@ -884,8 +1139,9 @@ def main() -> None:
                     view_trades["청산시간"] = pd.to_datetime(view_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%m-%d %H:%M')
                     view_trades["방향"] = view_trades["side"]
                     view_trades["수익률(%)"] = view_trades["pnl_pct"].round(2)
+                    view_trades["레버리지"] = view_trades["leverage"].astype(str) + "x"
                     
-                    display_cols = ["symbol", "방향", "진입시간", "청산시간", "보유시간", "entry_p", "exit_p", "수익률(%)", "reason"]
+                    display_cols = ["symbol", "방향", "진입시간", "청산시간", "보유시간", "레버리지", "entry_p", "exit_p", "수익률(%)", "reason"]
                     # 정렬 먼저 하고 컬럼 슬라이싱
                     sorted_trades = view_trades.sort_values("exit_time", ascending=False)
                     st.dataframe(sorted_trades[display_cols], width="stretch", height=500)
@@ -909,12 +1165,16 @@ def main() -> None:
         else:
             st.info("아직 전략 변경 기록이 없습니다.")
 
-    with tabs[5]:
+    with tabs[6]:
         _render_health()
         _render_logs()
 
-    with tabs[6]:
+    with tabs[7]:
         _render_rules()
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":

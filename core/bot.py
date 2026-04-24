@@ -17,6 +17,7 @@ from core.strategy import breakout_volume_direction_signal, calculate_atr
 from core.trade import append_trade_log, log_completed_trade, set_futures_leverage, set_futures_margin_type_isolated
 from core.watchlist import build_auto_watchlist
 from core.optimizer import StrategyOptimizer
+from core.persistence import load_bot_state, save_bot_state, save_virtual_position
 
 
 def _utc_now() -> str:
@@ -212,7 +213,8 @@ def run_bot(client: Client, settings: Settings) -> None:
     자동 진입/청산 루프.
     """
     params = load_params(settings)
-    state = BotState()
+    # 영속화된 상태 불러오기
+    state = load_bot_state(BotState)
 
     # 자율 최적화 스레드 시작
     threading.Thread(target=_run_optimizer_loop, args=(client, settings), daemon=True).start()
@@ -452,5 +454,17 @@ def run_bot(client: Client, settings: Settings) -> None:
                         state.take_profit_price = entry_price - (atr_val * params.atr_multiplier_tp)
                     
                     print(f"[{_utc_now()}] ATR SL: {state.stop_loss_price:.2f}, TP: {state.take_profit_price:.2f}")
+
+            # 상태 및 가상 포지션 실시간 저장
+            save_bot_state(state)
+            if settings.trading_dry_run:
+                m_p = get_mark_price(client, symbol) if symbol else None
+                save_virtual_position(
+                    state.in_position_symbol, 
+                    state.entry_side, 
+                    state.entry_price, 
+                    m_p,
+                    settings.trading_quantity if state.in_position_symbol else 0
+                )
 
         time.sleep(settings.bot_loop_seconds)
