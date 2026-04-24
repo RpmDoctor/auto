@@ -370,42 +370,50 @@ def _render_trade_summary(symbol: str | None, limit: int) -> None:
 
 
 def _render_rules() -> None:
-    st.subheader("진입/청산 조건(현재 적용값)")
+    st.subheader("🤖 봇 자율 전략 매뉴얼 (실시간 최적화 적용 중)")
+    st.caption("아래 조건들은 봇이 30일치 데이터를 자가 학습하여 갱신한 최신 규칙입니다.")
+    
     settings = get_settings()
     params = load_params(settings)
 
-    st.write("진입(모든 필터 만족 시 진입)")
-    st.write(
-        f"- 돌파: 직전 {params.lookback}개 봉의 고가/저가 돌파\n"
-        f"- 거래량: 현재 거래량 > 평균거래량 × {params.volume_mult}\n"
-        f"- 방향성 캔들: 양봉/음봉 + 몸통비율 ≥ {params.min_body_pct}%\n"
-        f"- 추세(EMA): 단기({params.ema_fast}) > 장기({params.ema_slow}) (LONG 기준)\n"
-        f"- MACD: MACD선 > Signal선 (LONG 기준)\n"
-        f"- RSI 필터: 과매수/과매도 구간 진입 전 체크"
-    )
+    # 현재 전략 성향 판별 로직
+    profile_name = "균형형"
+    profile_color = "blue"
+    profile_desc = "표준적인 위험과 수익을 추구합니다."
+    
+    if params.volume_mult <= 1.3 and params.atr_multiplier_tp >= 2.5:
+        profile_name = "공격형 (추세 추종)"
+        profile_color = "red"
+        profile_desc = "낮은 진입 장벽과 높은 익절가로 큰 추세를 먹으려 노력합니다."
+    elif params.volume_mult >= 1.8:
+        profile_name = "보수형 (확실한 타점)"
+        profile_color = "green"
+        profile_desc = "거래량이 크게 터지는 확실한 순간에만 진입하여 승률을 관리합니다."
 
-    st.write("청산(아래 중 하나라도 만족 시 청산)")
-    st.write(
-        f"- ATR 손절: 진입가 ± (ATR × {params.atr_multiplier_sl})\n"
-        f"- ATR 익절: 진입가 ± (ATR × {params.atr_multiplier_tp})\n"
-        f"- 트레일링 스탑: 고점대비 {params.trailing_stop_pct}%\n"
-        f"- 시간청산: {params.max_hold_seconds}초\n"
-        f"- 쿨다운: 거래 후 {params.cooldown_seconds}초"
-    )
+    st.info(f"📍 **현재 전략 성향: :{profile_color}[{profile_name}]**\n\n{profile_desc}")
 
-    st.write("자동 수정(데이터 기반)")
-    st.write("- 최근 청산 데이터가 충분히 쌓이면(기본 20건) `거래량 배수`를 아주 조금씩 자동 조정합니다.")
-    st.caption("저장: `config/auto_params.json`, 기록: `logs/param_updates.csv`")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 📥 진입 조건 (Entry)")
+        st.write(f"**1. 매매 주기**: `{params.trading_interval}` (현재 최적 주기)")
+        st.write(f"**2. 돌파 필터**: 직전 `{params.lookback}`개 봉의 고점/저점 돌파")
+        st.write(f"**3. 거래량 필터**: 평균 거래량의 `{params.volume_mult:.2f}`배 이상 폭발 시")
+        st.write(f"**4. 캔들 몸통**: 캔들 전체 대비 `{params.min_body_pct}%` 이상의 실체 확인")
+        st.write(f"**5. 보조지표**: EMA 정배열(추세) 및 MACD 시그널 교차 확인")
+
+    with col2:
+        st.markdown("### 📤 청산 조건 (Exit)")
+        st.write(f"**1. 목표 수익(TP)**: 진입가 ± (ATR × `{params.atr_multiplier_tp:.2f}`배)")
+        st.write(f"**2. 손절 라인(SL)**: 진입가 ± (ATR × `{params.atr_multiplier_sl:.2f}`배)")
+        st.write(f"**3. 트레일링 스탑**: 고점 대비 `{params.trailing_stop_pct}%` 하락 시 익절 보존")
+        st.write(f"**4. 최대 보유 시간**: `{params.max_hold_seconds // 3600}`시간 (이후 자동 시장가 종료)")
+        st.write(f"**5. 쿨다운**: 매매 종료 후 `{params.cooldown_seconds // 60}`분간 재진입 금지")
 
     st.divider()
-    st.subheader("레버리지 정책")
-    if settings.leverage_mode == "auto":
-        st.write(f"- 모드: 자동(auto)")
-        st.write(f"- 현재 목표 레버리지: {params.leverage}x (범위 {settings.leverage_min}~{settings.leverage_max}x, 최대 5배 준수)")
-        st.write("- 최근 성과가 불안하면 1단계 낮추고, 안정적이면 1단계 올립니다.")
-    else:
-        st.write(f"- 모드: 수동(manual)")
-        st.write(f"- 고정 레버리지: {settings.trading_leverage}x")
+    st.subheader("⚙️ 자가 발전 시스템 (Self-Learning)")
+    st.write("- **데이터 기반 갱신**: 봇은 매일 30일치 데이터를 전수 조사하여 위 수치들을 자동으로 보정합니다.")
+    st.write(f"- **현재 학습 기록**: `logs/param_updates.csv`에 총 `{len(pd.read_csv(Path('logs/param_updates.csv'))) if Path('logs/param_updates.csv').exists() else 0}`회의 지능 업데이트 기록이 있습니다.")
+    st.caption(f"파라미터 저장소: `config/auto_params.json` (마지막 수정: {datetime.fromtimestamp(Path('config/auto_params.json').stat().st_mtime).strftime('%H:%M:%S') if Path('config/auto_params.json').exists() else 'N/A'})")
 
     st.divider()
     st.subheader("수수료/손익 가이드(중요)")
