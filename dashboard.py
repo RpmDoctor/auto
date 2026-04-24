@@ -231,6 +231,104 @@ def _get_live_signals(symbols: list[str]) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
+@st.cache_data(ttl=300)
+def _get_market_intel_data(symbols: list[str]):
+    if not symbols: return None
+    client = _get_client()
+    settings = get_settings()
+    params = load_params(settings)
+    
+    results = []
+    for s in symbols[:15]: # 성능을 위해 상위 15개만 분석
+        try:
+            df = fetch_futures_klines(client, symbol=s, interval="1h", limit=50)
+            if df.empty: continue
+            
+            close = df["close"].astype(float)
+            ema_fast = calculate_ema(close, params.ema_fast).iloc[-1]
+            ema_slow = calculate_ema(close, params.ema_slow).iloc[-1]
+            rsi = calculate_rsi(close, params.rsi_period).iloc[-1]
+            atr = calculate_atr(df, 14).iloc[-1]
+            curr_price = close.iloc[-1]
+            
+            # 변동성 비율 (가격 대비 ATR)
+            volatility_ratio = (atr / curr_price) * 100
+            
+            results.append({
+                "symbol": s,
+                "trend": "BULL" if ema_fast > ema_slow else "BEAR",
+                "rsi": rsi,
+                "vol_ratio": volatility_ratio,
+                "change_pct": ((curr_price - close.iloc[0]) / close.iloc[0]) * 100
+            })
+        except Exception: continue
+    return results
+
+def _render_market_intelligence(symbols: list[str]) -> None:
+    st.subheader("🌐 실시간 시장 인텔리전스 보고서")
+    st.caption("현재 시장의 전체적인 흐름과 심리를 분석한 데이터입니다. (매 5분 자동 갱신)")
+
+    with st.spinner("시장 상황 분석 중..."):
+        data = _get_market_intel_data(symbols)
+        
+    if not data:
+        st.warning("분석할 시장 데이터가 부족합니다.")
+        return
+
+    df = pd.DataFrame(data)
+    
+    # 1. 시장 심리 게이지
+    bull_count = len(df[df["trend"] == "BULL"])
+    bear_count = len(df) - bull_count
+    bull_ratio = (bull_count / len(df)) * 100
+    
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        sentiment = "탐욕(Greed)" if bull_ratio > 60 else "공포(Fear)" if bull_ratio < 40 else "중립(Neutral)"
+        st.metric("시장 심리 (Sentiment)", sentiment, f"{bull_ratio:.1f}% Bull")
+        st.progress(bull_ratio / 100)
+    
+    with c2:
+        avg_vol = df["vol_ratio"].mean()
+        vol_status = "폭발적" if avg_vol > 2.5 else "역동적" if avg_vol > 1.5 else "안정적"
+        st.metric("시장 변동성 (Volatility)", vol_status, f"{avg_vol:.2f}%")
+        
+    with c3:
+        avg_rsi = df["rsi"].mean()
+        rsi_status = "과매수권" if avg_rsi > 65 else "과매도권" if avg_rsi < 35 else "적정가"
+        st.metric("평균 강도 (RSI)", rsi_status, f"{avg_rsi:.1f}")
+
+    st.divider()
+    
+    # 2. 섹터 요약 및 전략 어드바이스
+    col_l, col_r = st.columns([2, 1])
+    with col_l:
+        st.markdown("### 🚀 상승/하락 TOP 3 (Watchlist 기준)")
+        sorted_df = df.sort_values("change_pct", ascending=False)
+        top_3 = sorted_df.head(3)
+        bot_3 = sorted_df.tail(3).iloc[::-1]
+        
+        t1, t2 = st.columns(2)
+        with t1:
+            st.success("**최근 상승세 강한 종목**")
+            for _, row in top_3.iterrows():
+                st.write(f"- **{row['symbol']}**: +{row['change_pct']:.2f}%")
+        with t2:
+            st.error("**최근 하락세 강한 종목**")
+            for _, row in bot_3.iterrows():
+                st.write(f"- **{row['symbol']}**: {row['change_pct']:.2f}%")
+
+    with col_r:
+        st.markdown("### 💡 오늘의 매매 전략 조언")
+        if bull_ratio > 70 and avg_vol > 2.0:
+            st.info("🔥 **불장 추세 추종**: 강력한 상승 흐름입니다. 롱(Long) 위주의 추세 추종 전략이 유효합니다.")
+        elif bear_count > bull_count and avg_vol > 2.0:
+            st.warning("⚠️ **패닉 셀 주의**: 시장이 하락 압력을 강하게 받고 있습니다. 짧은 숏(Short) 또는 관망을 추천합니다.")
+        elif avg_vol < 1.0:
+            st.write("😴 **횡보장 대응**: 변동성이 낮습니다. 박스권 매매를 하거나 봇의 진입 장벽을 높여 실수를 줄이세요.")
+        else:
+            st.write("⚖️ **중립 장세**: 확실한 방향성이 나올 때까지 종목별로 분산 대응하는 것이 유리합니다.")
+
 def _render_health() -> None:
     st.subheader("상태 점검")
     st.caption("지금 API 연결/권한/조회가 정상인지 확인하는 검사입니다.")
@@ -659,7 +757,7 @@ def main() -> None:
         st.error(str(e))
         st.stop()
 
-    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
+    tabs = st.tabs(["거래", "포지션", "실시간 모니터링", "시장 인텔리전스", "전략 성과 리포트", "상태/로그", "진입/청산 조건"])
 
     with tabs[0]:
         _render_trade_summary(symbol=symbol, limit=trades_limit)
@@ -680,6 +778,9 @@ def main() -> None:
             st.info("관심 종목이 없습니다.")
 
     with tabs[3]:
+        _render_market_intelligence(watchlist)
+
+    with tabs[4]:
         st.subheader("🤖 봇 자율 전략 분석 및 최적화 보고")
         st.caption("봇이 백그라운드에서 스스로 분석하고 갱신한 최신 전략 성과 리포트입니다.")
         
