@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
@@ -29,6 +30,9 @@ from core.params import load_params
 from core.strategy import breakout_volume_direction_signal, calculate_rsi, calculate_ema, calculate_atr
 from core.data import fetch_futures_klines, fetch_historical_klines_paginated
 from core.backtest import PortfolioBacktester, calculate_portfolio_metrics
+from core.storage import save_report_snapshot, load_report_snapshot, get_latest_snapshot_info
+from core.adaptive import apply_backtest_feedback
+from core.params import save_params
 
 
 _COIN_KR = {
@@ -744,9 +748,18 @@ def main() -> None:
         st.subheader("종합 전략 성과 시나리오 (최근 트렌드 분석)")
         st.caption("관심 종목 전체를 대상으로 현재 로직을 적용했을 때의 가상 성과 리포트입니다.")
         
-        report_days = st.selectbox("분석 기간", [7, 14, 30], index=1, format_func=lambda x: f"최근 {x}일")
+        info = get_latest_snapshot_info()
+        report_days = st.selectbox("분석 기간", [7, 14, 30], index=1, format_func=lambda x: f"최근 {x}일" + (f" (업데이트: {info[x]})" if x in info else " (기록 없음)"))
         
-        if st.button("종합 리포트 생성"):
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            run_btn = st.button("종합 리포트 생성 (새로고침)")
+        with col_btn2:
+            load_btn = st.button("마지막 저장된 리포트 불러오기")
+
+        # 리포트 데이터 준비
+        report_data = None
+        if run_btn:
             if not watchlist:
                 st.warning("관심 종목이 없습니다. 사이드바에서 종목을 먼저 확인하세요.")
             else:
@@ -757,17 +770,24 @@ def main() -> None:
                     
                     symbol_data = {}
                     progress_bar = st.progress(0)
-                    for idx, s in enumerate(watchlist):
+                    
+                    def _fetch_wrapper(s):
                         try:
-                            # 장기 데이터 페이징 수집 (로컬 캐시 활용)
-                            df = fetch_historical_klines_paginated(
+                            return s, fetch_historical_klines_paginated(
                                 client, symbol=s, interval=settings.trading_interval, days=report_days
                             )
-                            if not df.empty:
-                                symbol_data[s] = df
                         except Exception as e:
-                            st.error(f"{s} 데이터 로드 실패: {e}")
-                        progress_bar.progress((idx + 1) / len(watchlist))
+                            return s, e
+
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        futures = [executor.submit(_fetch_wrapper, s) for s in watchlist]
+                        for i, future in enumerate(futures):
+                            s, res = future.result()
+                            if isinstance(res, pd.DataFrame) and not res.empty:
+                                symbol_data[s] = res
+                            elif isinstance(res, Exception):
+                                st.error(f"{s} 데이터 로드 실패: {res}")
+                            progress_bar.progress((i + 1) / len(watchlist))
                     
                     if not symbol_data:
                         st.error("데이터를 가져온 종목이 없습니다.")
@@ -775,36 +795,69 @@ def main() -> None:
                         backtester = PortfolioBacktester(params, settings)
                         all_trades = backtester.run(symbol_data)
                         metrics = calculate_portfolio_metrics(all_trades)
-                        
-                        if all_trades.empty:
-                            st.warning("해당 기간 동안 발생한 시뮬레이션 거래가 없습니다.")
-                        else:
-                            # 상단 지표 카드
-                            c1, c2, c3, c4 = st.columns(4)
-                            with c1: st.metric("예상 누적 수익률", f"{metrics['total_pnl']:.2f}%")
-                            with c2: st.metric("총 거래 횟수", f"{metrics['total_trades']}회")
-                            with c3: st.metric("종합 승률", f"{metrics['win_rate']:.1f}%")
-                            with c4: st.metric("최대 리스크(MDD)", f"{metrics['max_drawdown']:.2f}%")
-                            
-                            # 수익률 차트
-                            st.subheader("누적 수익률 추이 (시뮬레이션)")
-                            all_trades["cum_pnl"] = all_trades["pnl_pct"].cumsum()
-                            # 시간 표시를 위해 KST 변환
-                            all_trades["exit_time_dt"] = pd.to_datetime(all_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul")
-                            st.line_chart(all_trades.set_index("exit_time_dt")["cum_pnl"])
-                            
-                            # 세부 종목별 성과 요약
-                            st.subheader("종목별 성과 요약")
-                            symbol_summary = all_trades.groupby("symbol")["pnl_pct"].agg(["count", "sum", "mean"]).reset_index()
-                            symbol_summary.columns = ["심볼", "거래횟수", "누적수익률(%)", "평균수익률(%)"]
-                            st.dataframe(symbol_summary.sort_values("누적수익률(%)", ascending=False), width="stretch")
-                            
-                            # 전체 거래 내역
-                            with st.expander("전체 시뮬레이션 거래 내역 보기"):
-                                view_trades = all_trades.copy()
-                                view_trades["entry_time"] = pd.to_datetime(view_trades["entry_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul")
-                                view_trades["exit_time"] = pd.to_datetime(view_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul")
-                                st.dataframe(view_trades, width="stretch")
+                        save_report_snapshot(report_days, metrics, all_trades)
+                        report_data = (metrics, all_trades)
+                        st.session_state.last_report = report_data
+        
+        elif load_btn:
+            metrics, all_trades = load_report_snapshot(report_days)
+            if metrics is None or all_trades.empty:
+                st.warning(f"{report_days}일 리포트 스냅샷이 없습니다. 먼저 생성을 진행하세요.")
+            else:
+                report_data = (metrics, all_trades)
+                st.session_state.last_report = report_data
+        elif "last_report" in st.session_state:
+            report_data = st.session_state.last_report
+
+        # 리포트 출력
+        if report_data:
+            metrics, all_trades = report_data
+            if all_trades.empty:
+                st.warning("해당 기간 동안 발생한 시뮬레이션 거래가 없습니다.")
+            else:
+                # 상단 지표 카드
+                st.divider()
+                c1, c2, c3, c4 = st.columns(4)
+                with c1: st.metric("예상 누적 수익률", f"{metrics['total_pnl']:.2f}%")
+                with c2: st.metric("총 거래 횟수", f"{metrics['total_trades']}회")
+                with c3: st.metric("종합 승률", f"{metrics['win_rate']:.1f}%")
+                with c4: st.metric("최대 리스크(MDD)", f"{metrics['max_drawdown']:.2f}%")
+                
+                # 피드백 섹션
+                st.info("💡 분석 결과를 전략에 반영하여 현재 트렌드에 적응할 수 있습니다.")
+                if st.button("분석 결과를 실제 전략 파라미터에 반영하기"):
+                    settings = get_settings()
+                    params = load_params(settings)
+                    new_params, reason = apply_backtest_feedback(params, metrics)
+                    if reason:
+                        save_params(new_params)
+                        # logs/param_updates.csv에 기록 (adaptive.py의 내부 함수 활용)
+                        from core.adaptive import _append_update_log
+                        _append_update_log(params, new_params, f"[Backtest Feedback] {reason}")
+                        st.success(f"전략 반영 완료: {reason}")
+                        st.balloons()
+                    else:
+                        st.info("현재 파라미터가 이미 최적 상태입니다. 변경 사항이 없습니다.")
+
+                # 수익률 차트
+                st.subheader("누적 수익률 추이 (시뮬레이션)")
+                all_trades = all_trades.sort_values("exit_time")
+                all_trades["cum_pnl"] = all_trades["pnl_pct"].cumsum()
+                all_trades["exit_time_dt"] = pd.to_datetime(all_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul")
+                st.line_chart(all_trades.set_index("exit_time_dt")["cum_pnl"])
+                
+                # 세부 종목별 성과 요약
+                st.subheader("종목별 성과 요약")
+                symbol_summary = all_trades.groupby("symbol")["pnl_pct"].agg(["count", "sum", "mean"]).reset_index()
+                symbol_summary.columns = ["심볼", "거래횟수", "누적수익률(%)", "평균수익률(%)"]
+                st.dataframe(symbol_summary.sort_values("누적수익률(%)", ascending=False), width="stretch")
+                
+                # 전체 거래 내역
+                with st.expander("전체 시뮬레이션 거래 내역 보기"):
+                    view_trades = all_trades.copy()
+                    view_trades["entry_time"] = pd.to_datetime(view_trades["entry_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul")
+                    view_trades["exit_time"] = pd.to_datetime(view_trades["exit_time"], unit='ms', utc=True).dt.tz_convert("Asia/Seoul")
+                    st.dataframe(view_trades, width="stretch")
 
     with tabs[4]:
         _render_health()

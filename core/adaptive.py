@@ -167,3 +167,37 @@ def get_symbol_performance_score(symbol: str, window: int = 20) -> float:
         return max(0.1, score)
     except Exception:
         return 1.0
+
+
+def apply_backtest_feedback(
+    params: StrategyParams,
+    metrics: dict[str, Any],
+) -> tuple[StrategyParams, str]:
+    """
+    백테스트 결과(최근 트렌드 성과)를 바탕으로 파라미터를 보정합니다.
+    """
+    from typing import Any
+    new = StrategyParams(**asdict(params))
+    reasons = []
+    
+    win_rate = metrics.get("win_rate", 0.0) / 100.0
+    total_pnl = metrics.get("total_pnl", 0.0)
+    mdd = metrics.get("max_drawdown", 0.0)
+    
+    # 1. 승률이 낮으면 진입 조건을 더 까다롭게 (volume_mult 상향)
+    if win_rate < 0.45:
+        new.volume_mult = round(min(new.volume_mult + 0.2, 3.0), 2)
+        reasons.append(f"백테스트 승률 저조({win_rate*100:.1f}%) -> 진입 필터 강화")
+        
+    # 2. 누적 수익이 마이너스면 레버리지 축소
+    if total_pnl < 0:
+        new.leverage = max(1, new.leverage - 1)
+        reasons.append(f"백테스트 손실({total_pnl:.2f}%) -> 레버리지 축소")
+        
+    # 3. MDD가 너무 크면 손절을 더 타이트하게
+    if mdd > 10.0:
+        new.atr_multiplier_sl = round(max(new.atr_multiplier_sl - 0.2, 1.0), 2)
+        reasons.append(f"백테스트 MDD 과다({mdd:.1f}%) -> 손절선 상향")
+
+    reason_str = " | ".join(reasons)
+    return new, reason_str

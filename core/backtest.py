@@ -39,109 +39,111 @@ class PortfolioBacktester:
         return result_df
 
     def _run_single_backtest(self, symbol: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        if df.empty:
+            return []
+
+        # 지표 선계산 (Vectorized)
+        close_series = df["close"].astype(float)
+        high_series = df["high"].astype(float)
+        low_series = df["low"].astype(float)
+        vol_series = df["volume"].astype(float)
+
+        rsi = calculate_rsi(close_series, self.params.rsi_period)
+        ema_fast = calculate_ema(close_series, self.params.ema_fast)
+        ema_slow = calculate_ema(close_series, self.params.ema_slow)
+        macd, macd_signal = calculate_macd(close_series, self.params.macd_fast, self.params.macd_slow, self.params.macd_signal)
+        atr = calculate_atr(df, 14) # Default period 14
+        
+        # Donchian Channels (Breakout)
+        lookback = self.params.lookback
+        prev_high = high_series.shift(1).rolling(window=lookback).max()
+        prev_low = low_series.shift(1).rolling(window=lookback).min()
+        avg_vol = vol_series.shift(1).rolling(window=lookback).mean()
+
         trades = []
         in_pos = False
         side = None
         entry_p = 0.0
         high_water = 0.0
         entry_time = None
-        entry_reason = ""
-
+        
         sl_p = 0.0
         tp_p = 0.0
-        
-        # 수수료 설정
-        fee_rate = 0.0005 # 편도 0.05%
-        
-        # 전략 파라미터
-        ts = self.params.trailing_stop_pct / 100.0
+        fee_rate = 0.0005
+        ts_pct = self.params.trailing_stop_pct / 100.0
 
-        # 지표 계산을 위한 시작 인덱스
-        start_idx = max(self.params.lookback, self.params.rsi_period, self.params.ema_slow) + 5
+        # 루프 시작점
+        start_idx = int(max(lookback, self.params.rsi_period, self.params.ema_slow, 30))
         
-        if len(df) <= start_idx:
-            return []
-
-        for i in range(int(start_idx), len(df)):
-            cur_df = df.iloc[: i + 1]
-            cur_row = df.iloc[i]
-            cur_p = float(cur_row["close"])
-            cur_time = cur_row["open_time"]
+        # 최적화된 루프
+        for i in range(start_idx, len(df)):
+            cur_p = close_series.iloc[i]
+            cur_time = df["open_time"].iloc[i]
 
             if not in_pos:
-                sig, reason = breakout_volume_direction_signal(
-                    cur_df,
-                    lookback=self.params.lookback,
-                    volume_mult=self.params.volume_mult,
-                    min_body_pct=self.params.min_body_pct,
-                    rsi_period=self.params.rsi_period,
-                    rsi_low=self.params.rsi_low,
-                    rsi_high=self.params.rsi_high,
-                    ema_fast_p=self.params.ema_fast,
-                    ema_slow_p=self.params.ema_slow,
-                    macd_fast=self.params.macd_fast,
-                    macd_slow=self.params.macd_slow,
-                    macd_signal=self.params.macd_signal,
-                )
+                # 진입 조건 체크 (Pre-calculated values 사용)
+                c_rsi = rsi.iloc[i]
+                c_ema_f = ema_fast.iloc[i]
+                c_ema_s = ema_slow.iloc[i]
+                c_macd = macd.iloc[i]
+                c_macd_s = macd_signal.iloc[i]
+                
+                c_open = df["open"].iloc[i]
+                c_high = df["high"].iloc[i]
+                c_low = df["low"].iloc[i]
+                c_vol = vol_series.iloc[i]
+                
+                p_high = prev_high.iloc[i]
+                p_low = prev_low.iloc[i]
+                p_vol_avg = avg_vol.iloc[i]
+                
+                body_pct = abs(cur_p - c_open) / c_open * 100.0 if c_open > 0 else 0
+                vol_ok = c_vol > (p_vol_avg * self.params.volume_mult) if p_vol_avg > 0 else False
+                
+                # Signal Logic (breakout_volume_direction_signal의 단순화 버전)
+                is_bull = cur_p > c_open
+                is_bear = cur_p < c_open
+                
+                long_cond = (c_high > p_high) and vol_ok and is_bull and (body_pct >= self.params.min_body_pct) and (c_ema_f > c_ema_s) and (c_rsi < self.params.rsi_high) and (c_macd > c_macd_s)
+                short_cond = (c_low < p_low) and vol_ok and is_bear and (body_pct >= self.params.min_body_pct) and (c_ema_f < c_ema_s) and (c_rsi > self.params.rsi_low) and (c_macd < c_macd_s)
 
-                if sig in ["LONG", "SHORT"]:
-                    in_pos = True
-                    side = sig
-                    entry_p = cur_p
-                    high_water = cur_p
-                    entry_time = cur_time
-                    entry_reason = reason
+                if long_cond:
+                    in_pos, side = True, "LONG"
+                elif short_cond:
+                    in_pos, side = True, "SHORT"
 
-                    # ATR 기반 SL/TP 계산
-                    atr_series = calculate_atr(cur_df)
-                    atr_val = float(atr_series.iloc[-1])
-                    if sig == "LONG":
-                        sl_p = entry_p - (atr_val * self.params.atr_multiplier_sl)
-                        tp_p = entry_p + (atr_val * self.params.atr_multiplier_tp)
+                if in_pos:
+                    entry_p, high_water, entry_time = cur_p, cur_p, cur_time
+                    c_atr = atr.iloc[i]
+                    if side == "LONG":
+                        sl_p = entry_p - (c_atr * self.params.atr_multiplier_sl)
+                        tp_p = entry_p + (c_atr * self.params.atr_multiplier_tp)
                     else:
-                        sl_p = entry_p + (atr_val * self.params.atr_multiplier_sl)
-                        tp_p = entry_p - (atr_val * self.params.atr_multiplier_tp)
+                        sl_p = entry_p + (c_atr * self.params.atr_multiplier_sl)
+                        tp_p = entry_p - (c_atr * self.params.atr_multiplier_tp)
             else:
+                # 청산 조건 체크
                 exit_reason = None
-                pnl_pct = 0.0
-
                 if side == "LONG":
                     high_water = max(high_water, cur_p)
-                    if cur_p <= sl_p:
-                        exit_reason = "ATR손절"
-                    elif cur_p >= tp_p:
-                        exit_reason = "ATR익절"
-                    elif ts > 0 and cur_p <= high_water * (1 - ts) and cur_p > entry_p:
-                        exit_reason = "트레일링"
-                    
-                    if exit_reason:
-                        pnl_pct = (cur_p - entry_p) / entry_p - (fee_rate * 2)
+                    if cur_p <= sl_p: exit_reason = "ATR손절"
+                    elif cur_p >= tp_p: exit_reason = "ATR익절"
+                    elif ts_pct > 0 and cur_p <= high_water * (1 - ts_pct) and cur_p > entry_p: exit_reason = "트레일링"
+                    if exit_reason: pnl_pct = (cur_p - entry_p) / entry_p - (fee_rate * 2)
                 else: # SHORT
                     high_water = min(high_water, cur_p)
-                    if cur_p >= sl_p:
-                        exit_reason = "ATR손절"
-                    elif cur_p <= tp_p:
-                        exit_reason = "ATR익절"
-                    elif ts > 0 and cur_p >= high_water * (1 + ts) and cur_p < entry_p:
-                        exit_reason = "트레일링"
-                    
-                    if exit_reason:
-                        pnl_pct = (entry_p - cur_p) / entry_p - (fee_rate * 2)
+                    if cur_p >= sl_p: exit_reason = "ATR손절"
+                    elif cur_p <= tp_p: exit_reason = "ATR익절"
+                    elif ts_pct > 0 and cur_p >= high_water * (1 + ts_pct) and cur_p < entry_p: exit_reason = "트레일링"
+                    if exit_reason: pnl_pct = (entry_p - cur_p) / entry_p - (fee_rate * 2)
 
                 if exit_reason:
                     trades.append({
-                        "symbol": symbol,
-                        "entry_time": entry_time,
-                        "exit_time": cur_time,
-                        "side": side,
-                        "entry_p": entry_p,
-                        "exit_p": cur_p,
-                        "pnl_pct": pnl_pct * 100,
-                        "reason": exit_reason,
-                        "entry_reason": entry_reason
+                        "symbol": symbol, "entry_time": entry_time, "exit_time": cur_time,
+                        "side": side, "entry_p": entry_p, "exit_p": cur_p,
+                        "pnl_pct": pnl_pct * 100, "reason": exit_reason
                     })
                     in_pos = False
-
         return trades
 
 
