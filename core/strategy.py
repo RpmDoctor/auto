@@ -99,12 +99,13 @@ def breakout_volume_direction_signal(
     rsi_period: int = 14,
     rsi_low: float = 30.0,
     rsi_high: float = 70.0,
-    ema_fast_p: int = 20,
-    ema_slow_p: int = 50,
+    ema_fast: int = 20,
+    ema_slow: int = 50,
     macd_fast: int = 12,
     macd_slow: int = 26,
     macd_signal: int = 9,
     atr_period: int = 14,
+    **kwargs,
 ) -> tuple[str, str]:
     """
     고도화된 돌파 진입 조건:
@@ -117,7 +118,7 @@ def breakout_volume_direction_signal(
     반환:
     - ("LONG"|"SHORT"|"HOLD", "사유")
     """
-    min_req = max(lookback, rsi_period, ema_slow_p, macd_slow + macd_signal, atr_period) + 2
+    min_req = max(lookback, rsi_period, ema_slow, macd_slow + macd_signal, atr_period) + 2
     if df.empty or len(df) < min_req:
         return "HOLD", "데이터 부족"
 
@@ -125,8 +126,8 @@ def breakout_volume_direction_signal(
     
     # 지표 계산
     rsi = calculate_rsi(close_series, rsi_period).iloc[-1]
-    ema_fast = calculate_ema(close_series, ema_fast_p).iloc[-1]
-    ema_slow = calculate_ema(close_series, ema_slow_p).iloc[-1]
+    ema_fast = calculate_ema(close_series, ema_fast).iloc[-1]
+    ema_slow = calculate_ema(close_series, ema_slow).iloc[-1]
     macd, macd_signal_line = calculate_macd(close_series, macd_fast, macd_slow, macd_signal)
     cur_macd = macd.iloc[-1]
     cur_macd_signal = macd_signal_line.iloc[-1]

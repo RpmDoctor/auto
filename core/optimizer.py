@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
@@ -44,6 +45,8 @@ class StrategyOptimizer:
             {"vol": 2.0, "tp": 1.6, "desc": "보수형 (확실한 진입)"}
         ]
         
+        leverage_levels = [1, 3, 5, 10] # 탐색할 레버리지 범위
+        
         for interval in self.intervals:
             logger.info(f"타임프레임 스캔 중: {interval}")
             
@@ -63,40 +66,40 @@ class StrategyOptimizer:
             
             # 각 프로필별 시뮬레이션 교차 테스트
             for prof in profiles:
-                test_params = StrategyParams(
-                    lookback=current_params.lookback,
-                    volume_mult=prof["vol"],
-                    min_body_pct=current_params.min_body_pct,
-                    atr_multiplier_tp=prof["tp"],
-                    atr_multiplier_sl=current_params.atr_multiplier_sl,
-                    trading_interval=interval
-                )
-                
-                # 시뮬레이션 실행
-                backtester = PortfolioBacktester(test_params, self.settings)
-                all_trades = backtester.run(symbol_data)
-                metrics = calculate_portfolio_metrics(all_trades)
-                
-                # 점수 계산: (수익률 * 3.0) + (승률 * 10) - (MDD * 4.0) 
-                # MDD(최대낙폭)에 대한 패널티를 강화하여 과도한 레버리지 효과 같은 리스크 방지
-                pnl = metrics.get("total_pnl", 0)
-                wr = metrics.get("win_rate", 0) / 100.0
-                mdd = metrics.get("max_drawdown", 0)
-                
-                # 수익이 마이너스면 제외, MDD가 20%를 넘어가면 큰 패널티
-                score = (pnl * 3.0) + (wr * 10.0) - (mdd * 4.0)
-                
-                logger.info(f"  > [{interval}][{prof['desc']}] PnL={pnl:.2f}%, Win={wr*100:.1f}%, MDD={mdd:.1f}%, Score={score:.2f}")
-                
-                if score > best_score:
-                    best_score = score
-                    best_metrics = metrics
-                    best_interval = interval
-                    best_trades = all_trades
-                    best_params = test_params
+                for lev in leverage_levels:
+                    test_params = replace(
+                        current_params,
+                        volume_mult=prof["vol"],
+                        atr_multiplier_tp=prof["tp"],
+                        leverage=lev,
+                        trading_interval=interval
+                    )
+                    
+                    # 시뮬레이션 실행
+                    backtester = PortfolioBacktester(test_params, self.settings)
+                    all_trades = backtester.run(symbol_data)
+                    metrics = calculate_portfolio_metrics(all_trades)
+                    
+                    # 점수 계산: (수익률 * 3.0) + (승률 * 10) - (MDD * 4.0) 
+                    # MDD(최대낙폭)에 대한 패널티를 강화하여 과도한 레버리지 효과 같은 리스크 방지
+                    pnl = metrics.get("total_pnl", 0)
+                    wr = metrics.get("win_rate", 0) / 100.0
+                    mdd = metrics.get("max_drawdown", 0)
+                    
+                    # 수익이 마이너스면 제외, MDD가 20%를 넘어가면 큰 패널티
+                    score = (pnl * 3.0) + (wr * 10.0) - (mdd * 4.0)
+                    
+                    logger.info(f"  > [{interval}][{prof['desc']}][{lev}x] PnL={pnl:.2f}%, Win={wr*100:.1f}%, MDD={mdd:.1f}%, Score={score:.2f}")
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_metrics = metrics
+                        best_interval = interval
+                        best_trades = all_trades
+                        best_params = test_params
 
         if best_metrics and best_score > -100:
-            logger.info(f"🏆 최적 전략 발견: {best_interval} ({best_params.volume_mult}배 필터 / {best_params.atr_multiplier_tp}배 익절)")
+            logger.info(f"🏆 최적 전략 발견: {best_interval} ({best_params.volume_mult}배 필터 / {best_params.atr_multiplier_tp}배 익절 / {best_params.leverage}x 레버리지)")
             
             # 실제 전략 파일에 반영
             save_params(best_params)

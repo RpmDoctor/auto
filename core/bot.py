@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
@@ -187,7 +187,7 @@ def run_bot(client: Client, settings: Settings) -> None:
                 except: pass
 
             df = fetch_futures_klines(client, symbol, params.trading_interval, limit=100)
-            signal, reason = breakout_volume_direction_signal(df, params)
+            signal, reason = breakout_volume_direction_signal(df, **asdict(params))
 
             if signal in {"LONG", "SHORT"}:
                 mark = float(df["close"].iloc[-1])
